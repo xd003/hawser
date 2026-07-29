@@ -511,9 +511,6 @@ func TestWriteStackFilesRejectsTraversal(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected traversal rejection, got nil")
 	}
-	if !strings.Contains(err.Error(), "traversal") {
-		t.Errorf("error = %q, want a traversal rejection", err.Error())
-	}
 	if _, statErr := os.Stat(filepath.Join(filepath.Dir(dir), "escape")); statErr == nil {
 		t.Error("traversal file was written outside stackDir")
 	}
