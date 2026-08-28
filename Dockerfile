@@ -44,6 +44,7 @@ RUN APKO_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") 
     "    - docker-cli" \
     "    - docker-compose=5.5.0-r0" \
     "    - docker-cli-buildx" \
+    "    - git" \
     "    - wget" \
     "entrypoint:" \
     "  command: /bin/sh -l" \
