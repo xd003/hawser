@@ -264,6 +264,7 @@ func (c *Client) sendHello() error {
 		// Ordered multi-file compose is compiled in wherever ComposeFileNames is
 		// handled, so it rides along with the compose capability.
 		capabilities = append(capabilities, protocol.CapabilityComposeFileNames)
+		capabilities = append(capabilities, protocol.CapabilityFileMtimeSync)
 	}
 
 	// Get hawser version from config (set at build time via ldflags)

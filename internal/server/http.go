@@ -515,7 +515,7 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"hawserVersion": hawserVersion,
 		"mode":          "standard",
 		"uptime":        uptime,
-		"capabilities":  []string{"exec", "metrics", "events", "compose", "git-sync-delete", protocol.CapabilityComposeFileNames},
+		"capabilities":  []string{"exec", "metrics", "events", "compose", "git-sync-delete", protocol.CapabilityComposeFileNames, protocol.CapabilityFileMtimeSync},
 	})
 }
 
