@@ -40,6 +40,7 @@ const (
 	CapabilityEvents           = "events"             // Docker event streaming
 	CapabilityGitSyncDelete    = "git-sync-delete"    // Git deletion sync: hash-verified file removals (#966)
 	CapabilityComposeFileNames = "compose-file-names" // Ordered multi-file compose (-f) via ComposeFileNames
+	CapabilityFileMtimeSync    = "file-mtime-sync"    // Preserve newer remote stack files during compose sync
 )
 
 // BaseMessage is the common structure for all messages
@@ -310,12 +311,12 @@ func ParseMessageType(data []byte) (string, error) {
 // demultiplexing for non-TTY containers.
 type ExecStartMessage struct {
 	Type        string `json:"type"`
-	ExecID      string `json:"execId"`      // Unique ID for this session
-	ContainerID string `json:"containerId"` // Container to exec into / attach to
-	Cmd         string `json:"cmd"`         // Command to run (e.g., "/bin/sh"); ignored when Attach is set
-	User        string `json:"user"`        // User to run as; ignored when Attach is set
-	Cols        int    `json:"cols"`        // Initial terminal columns
-	Rows        int    `json:"rows"`        // Initial terminal rows
+	ExecID      string `json:"execId"`           // Unique ID for this session
+	ContainerID string `json:"containerId"`      // Container to exec into / attach to
+	Cmd         string `json:"cmd"`              // Command to run (e.g., "/bin/sh"); ignored when Attach is set
+	User        string `json:"user"`             // User to run as; ignored when Attach is set
+	Cols        int    `json:"cols"`             // Initial terminal columns
+	Rows        int    `json:"rows"`             // Initial terminal rows
 	Attach      bool   `json:"attach,omitempty"` // Attach to the container's stdio instead of creating an exec
 }
 

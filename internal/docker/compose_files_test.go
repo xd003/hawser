@@ -5,7 +5,36 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestShouldKeepRemoteFileNewestMtimeWins(t *testing.T) {
+	for _, name := range []string{"compose.yaml", ".env", "config/app.conf"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("remote"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			remoteMtime := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
+			if err := os.Chtimes(path, remoteMtime, remoteMtime); err != nil {
+				t.Fatal(err)
+			}
+
+			if !shouldKeepRemoteFile(path, remoteMtime.UnixMilli()) {
+				t.Fatal("equal timestamp must keep the remote file")
+			}
+			if !shouldKeepRemoteFile(path, remoteMtime.Add(-time.Second).UnixMilli()) {
+				t.Fatal("newer remote file must be kept")
+			}
+			if shouldKeepRemoteFile(path, remoteMtime.Add(time.Second).UnixMilli()) {
+				t.Fatal("newer source file must be written")
+			}
+		})
+	}
+}
 
 func TestResolveComposeFileFlags_MultiFile(t *testing.T) {
 	stackDir := t.TempDir()

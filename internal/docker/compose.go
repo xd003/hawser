@@ -104,25 +104,26 @@ type RegistryCredentials struct {
 
 // ComposeOperation represents a compose operation request
 type ComposeOperation struct {
-	Operation        string                `json:"operation"` // up, down, pull, ps, logs
-	ProjectName      string                `json:"projectName"`
-	WorkDir          string                `json:"workDir"`
-	ComposeFile      string                `json:"composeFile,omitempty"`      // Content of compose file
-	ComposeFileName  string                `json:"composeFileName,omitempty"`  // Explicit compose filename to use (e.g., "docker-compose.prod.yml")
-	ComposeFileNames []string              `json:"composeFileNames,omitempty"` // Ordered compose filenames for multi -f (Dockhand multi-file / overrides)
-	Files            map[string]string     `json:"files,omitempty"`            // All files to write (relative path -> content)
-	Services         []string              `json:"services,omitempty"`         // Specific services to operate on
-	Options          map[string]string     `json:"options,omitempty"`          // Additional options
-	EnvVars          map[string]string     `json:"envVars,omitempty"`          // Environment variables for variable substitution
-	Registries       []RegistryCredentials `json:"registries,omitempty"`       // Registry credentials for docker login
-	ForceRecreate    bool                  `json:"forceRecreate,omitempty"`    // Force recreation of containers (--force-recreate)
-	RemoveVolumes    bool                  `json:"removeVolumes,omitempty"`    // Remove volumes on down (--volumes)
-	ServiceName      string                `json:"serviceName,omitempty"`      // Target specific service only (with --no-deps)
-	Build            bool                  `json:"build,omitempty"`            // Build images before starting (--build)
-	NoBuildCache     bool                  `json:"noBuildCache,omitempty"`     // Build without cache (--no-cache)
-	PullPolicy       string                `json:"pullPolicy,omitempty"`       // Pull policy: 'always' | 'missing' | 'never'
-	FilesToDelete    []FileToDelete        `json:"filesToDelete,omitempty"`    // Git deletion sync (#966): hash-verified file removals
-	RemoveFiles      bool                  `json:"removeFiles,omitempty"`      // On down: remove the stack directory entirely (#1162, stack deletion only)
+	Operation         string                `json:"operation"` // up, down, pull, ps, logs
+	ProjectName       string                `json:"projectName"`
+	WorkDir           string                `json:"workDir"`
+	ComposeFile       string                `json:"composeFile,omitempty"`       // Content of compose file
+	ComposeFileName   string                `json:"composeFileName,omitempty"`   // Explicit compose filename to use (e.g., "docker-compose.prod.yml")
+	ComposeFileNames  []string              `json:"composeFileNames,omitempty"`  // Ordered compose filenames for multi -f (Dockhand multi-file / overrides)
+	Files             map[string]string     `json:"files,omitempty"`             // All files to write (relative path -> content)
+	FileModifiedTimes map[string]int64      `json:"fileModifiedTimes,omitempty"` // Source mtimes in Unix milliseconds; newest file wins
+	Services          []string              `json:"services,omitempty"`          // Specific services to operate on
+	Options           map[string]string     `json:"options,omitempty"`           // Additional options
+	EnvVars           map[string]string     `json:"envVars,omitempty"`           // Environment variables for variable substitution
+	Registries        []RegistryCredentials `json:"registries,omitempty"`        // Registry credentials for docker login
+	ForceRecreate     bool                  `json:"forceRecreate,omitempty"`     // Force recreation of containers (--force-recreate)
+	RemoveVolumes     bool                  `json:"removeVolumes,omitempty"`     // Remove volumes on down (--volumes)
+	ServiceName       string                `json:"serviceName,omitempty"`       // Target specific service only (with --no-deps)
+	Build             bool                  `json:"build,omitempty"`             // Build images before starting (--build)
+	NoBuildCache      bool                  `json:"noBuildCache,omitempty"`      // Build without cache (--no-cache)
+	PullPolicy        string                `json:"pullPolicy,omitempty"`        // Pull policy: 'always' | 'missing' | 'never'
+	FilesToDelete     []FileToDelete        `json:"filesToDelete,omitempty"`     // Git deletion sync (#966): hash-verified file removals
+	RemoveFiles       bool                  `json:"removeFiles,omitempty"`       // On down: remove the stack directory entirely (#1162, stack deletion only)
 	// StreamOutput requests that Execute's onLine callback be wired up, so the
 	// caller receives one message per output line as the compose command runs
 	// instead of only the buffered result at the end. Defaults to false: a
@@ -201,6 +202,11 @@ func composeFileAbsPath(stackDir, relPath string) (string, string) {
 		missing = append(missing, filepath.Base(probe))
 		probe = parent
 	}
+}
+
+func shouldKeepRemoteFile(path string, sourceMtime int64) bool {
+	stat, err := os.Stat(path)
+	return err == nil && stat.ModTime().UnixMilli() >= sourceMtime
 }
 
 // shouldUseExplicitFFlags is true whenever Compose would not uniquely select
@@ -518,6 +524,13 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 				}, nil
 			}
 
+			if sourceMtime, ok := op.FileModifiedTimes[relPath]; ok {
+				if shouldKeepRemoteFile(absFilePath, sourceMtime) {
+					log.Infof("Compose: Kept newer remote file %s", relPath)
+					continue
+				}
+			}
+
 			// Create parent directories if needed
 			if dir := filepath.Dir(absFilePath); dir != stackDir {
 				if err := os.MkdirAll(dir, 0755); err != nil {
@@ -552,6 +565,16 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 					Error:    fmt.Sprintf("Failed to write file %s: %v", relPath, err),
 					ExitCode: 1,
 				}, nil
+			}
+			if sourceMtime, ok := op.FileModifiedTimes[relPath]; ok {
+				mtime := time.UnixMilli(sourceMtime)
+				if err := os.Chtimes(absFilePath, mtime, mtime); err != nil {
+					return &ComposeResult{
+						Success:  false,
+						Error:    fmt.Sprintf("Failed to preserve modification time for %s: %v", relPath, err),
+						ExitCode: 1,
+					}, nil
+				}
 			}
 			log.Debugf("Compose: Wrote file %s to %s", relPath, absFilePath)
 		}
