@@ -36,7 +36,7 @@ type Config struct {
 
 	// Timeouts and intervals (seconds)
 	HeartbeatInterval int // Default: 30
-	RequestTimeout    int // Default: 30
+	RequestTimeout    int // Default: 120 (slow storage, e.g. ZFS syncfs, can make container create exceed 30s)
 	ComposeTimeout    int // Default: 900 (compose operations can run far longer than a normal request)
 	ReconnectDelay    int // Initial reconnect delay, default: 1
 	MaxReconnectDelay int // Max reconnect delay, default: 60
@@ -91,7 +91,7 @@ func Load() (*Config, error) {
 
 		// Timeouts
 		HeartbeatInterval: getEnvInt("HEARTBEAT_INTERVAL", 30),
-		RequestTimeout:    getEnvInt("REQUEST_TIMEOUT", 30),
+		RequestTimeout:    getEnvInt("REQUEST_TIMEOUT", 120),
 		ComposeTimeout:    getEnvInt("COMPOSE_TIMEOUT", 900),
 		ReconnectDelay:    getEnvInt("RECONNECT_DELAY", 1),
 		MaxReconnectDelay: getEnvInt("MAX_RECONNECT_DELAY", 60),

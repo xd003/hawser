@@ -91,7 +91,7 @@ type StreamContext struct {
 // Run starts the Edge mode client with auto-reconnect
 func Run(cfg *config.Config, stop <-chan os.Signal) error {
 	// Create Docker client
-	dockerClient, err := docker.NewClient(cfg.DockerSocket)
+	dockerClient, err := docker.NewClient(cfg.DockerSocket, cfg.RequestTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to create Docker client: %w", err)
 	}

@@ -35,8 +35,14 @@ func (c *Client) GetSocketPath() string {
 	return c.socketPath
 }
 
-// NewClient creates a new Docker client
-func NewClient(socketPath string) (*Client, error) {
+// NewClient creates a new Docker client. requestTimeout (seconds) bounds every
+// non-streaming Docker API call; pass cfg.RequestTimeout so REQUEST_TIMEOUT is
+// honored (slow storage can make /containers/create exceed the old fixed 30s and
+// strand an update). A value <= 0 falls back to the 120s default.
+func NewClient(socketPath string, requestTimeout int) (*Client, error) {
+	if requestTimeout <= 0 {
+		requestTimeout = 120
+	}
 	// Create HTTP transport for Unix socket
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -61,7 +67,7 @@ func NewClient(socketPath string) (*Client, error) {
 		socketPath: socketPath,
 		httpClient: &http.Client{
 			Transport: transport,
-			Timeout:   30 * time.Second,
+			Timeout:   time.Duration(requestTimeout) * time.Second,
 		},
 		streamClient: &http.Client{
 			Transport: streamTransport,
