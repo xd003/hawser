@@ -60,8 +60,8 @@ func TestNewClient_TimeoutFallsBackToDefault(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewClient(%d): %v", v, err)
 		}
-		if got := c.httpClient.Timeout; got != 120*time.Second {
-			t.Fatalf("NewClient(%d) timeout = %v, want 120s default", v, got)
+		if got := c.httpClient.Timeout; got != 30*time.Second {
+			t.Fatalf("NewClient(%d) timeout = %v, want 30s default", v, got)
 		}
 	}
 }

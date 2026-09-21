@@ -477,7 +477,7 @@ Hawser is configured via environment variables:
 | `AGENT_ID` | Unique agent identifier | Auto-generated UUID |
 | `AGENT_NAME` | Human-readable agent name | Hostname |
 | `HEARTBEAT_INTERVAL` | Heartbeat interval in seconds | `30` |
-| `REQUEST_TIMEOUT` | Request timeout in seconds | `30` |
+| `REQUEST_TIMEOUT` | Request timeout in seconds (raise for slow storage such as ZFS syncfs, which can make a container recreate exceed 30s) | `30` |
 | `COMPOSE_TIMEOUT` | Compose operation timeout in seconds (up/down/pull can run far longer than a normal request) | `900` |
 | `RECONNECT_DELAY` | Initial reconnect delay (Edge mode) | `1` |
 | `MAX_RECONNECT_DELAY` | Maximum reconnect delay | `60` |
