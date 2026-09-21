@@ -398,6 +398,9 @@ func (c *Client) handleMessage(data []byte) {
 			log.Errorf("Failed to parse request: %v", err)
 			return
 		}
+		// Drop the raw frame now it's decoded into req; on a large compose payload this
+		// lets the GC reclaim it during handleRequest instead of pinning it (#1581).
+		data = nil
 		c.handleRequest(&req)
 
 	case protocol.TypePing:
@@ -639,6 +642,10 @@ func (c *Client) handleComposeRequest(ctx context.Context, req *protocol.Request
 		c.sendJSON(protocol.NewErrorMessage(req.RequestID, err.Error(), "PARSE_ERROR"))
 		return
 	}
+	// Free the raw request body now that it's decoded into op; for a large stack-files
+	// payload this lets the GC reclaim it before the per-file base64 decode allocates,
+	// lowering peak memory (#1581).
+	req.Body = nil
 
 	log.Infof("Compose operation: %s on %s", op.Operation, op.ProjectName)
 
