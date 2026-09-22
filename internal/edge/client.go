@@ -279,6 +279,7 @@ func (c *Client) sendHello() error {
 		dockerVersion,
 		hostname,
 		hawserVersion,
+		c.cfg.StacksDir,
 		capabilities,
 	)
 
