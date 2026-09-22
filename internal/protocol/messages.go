@@ -69,11 +69,12 @@ type HelloMessage struct {
 	TokenHash     string   `json:"tokenHash,omitempty"` // SHA-256 of token for secure verification
 	DockerVersion string   `json:"dockerVersion"`
 	Hostname      string   `json:"hostname"`
+	StacksDir     string   `json:"stacksDir"`
 	Capabilities  []string `json:"capabilities"`
 }
 
 // NewHelloMessage creates a new hello message
-func NewHelloMessage(agentID, agentName, token, tokenHash, dockerVersion, hostname, hawserVersion string, capabilities []string) *HelloMessage {
+func NewHelloMessage(agentID, agentName, token, tokenHash, dockerVersion, hostname, hawserVersion, stacksDir string, capabilities []string) *HelloMessage {
 	return &HelloMessage{
 		Type:          TypeHello,
 		Version:       hawserVersion,
@@ -84,6 +85,7 @@ func NewHelloMessage(agentID, agentName, token, tokenHash, dockerVersion, hostna
 		TokenHash:     tokenHash,
 		DockerVersion: dockerVersion,
 		Hostname:      hostname,
+		StacksDir:     stacksDir,
 		Capabilities:  capabilities,
 	}
 }
