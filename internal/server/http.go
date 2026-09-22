@@ -560,6 +560,7 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"hawserVersion": hawserVersion,
 		"mode":          "standard",
 		"uptime":        uptime,
+		"stacksDir":     s.cfg.StacksDir,
 		"capabilities":  capabilities,
 	})
 }
