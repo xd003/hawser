@@ -15,6 +15,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -496,6 +497,20 @@ func (c *Client) handleRequest(req *protocol.RequestMessage) {
 	// Check if this is a compose operation
 	if req.Path == "/_hawser/compose" {
 		c.handleComposeRequest(ctx, req)
+		return
+	}
+	if req.Path == "/_hawser/host-files" || strings.HasPrefix(req.Path, "/_hawser/host-files?") {
+		parsed, err := url.Parse(req.Path)
+		var listing *docker.HostFileListing
+		if err == nil {
+			listing, err = docker.ListHostFiles(parsed.Query().Get("path"))
+		}
+		if err != nil {
+			c.sendJSON(protocol.NewErrorMessage(req.RequestID, err.Error(), "HOST_FILES_ERROR"))
+			return
+		}
+		body, _ := json.Marshal(listing)
+		c.sendJSON(protocol.NewResponseMessage(req.RequestID, http.StatusOK, nil, body))
 		return
 	}
 
