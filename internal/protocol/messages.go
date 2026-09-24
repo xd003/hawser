@@ -41,6 +41,7 @@ const (
 	CapabilityGitSyncDelete    = "git-sync-delete"    // Git deletion sync: hash-verified file removals (#966)
 	CapabilityComposeFileNames = "compose-file-names" // Ordered multi-file compose (-f) via ComposeFileNames
 	CapabilityFileMtimeSync    = "file-mtime-sync"    // Preserve newer remote stack files during compose sync
+	CapabilityStackDirAdoption = "stack-dir-adoption" // Transactional adoption of an existing remote stack directory
 )
 
 // BaseMessage is the common structure for all messages

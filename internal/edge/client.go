@@ -15,6 +15,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -107,6 +108,10 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 
 	// Create compose client with API version negotiation
 	composeClient := docker.NewComposeClient(cfg.DockerSocket, cfg.StacksDir)
+	composeClient.SetDockerClient(dockerClient)
+	if err := composeClient.RecoverStackDirAdoptions(); err != nil {
+		log.Warnf("Could not recover stack directory adoption artifacts: %v", err)
+	}
 	if version != nil && version.APIVersion != "" {
 		composeClient.SetAPIVersion(version.APIVersion)
 		log.Debugf("Compose client using API version %s", version.APIVersion)
@@ -265,6 +270,7 @@ func (c *Client) sendHello() error {
 		// handled, so it rides along with the compose capability.
 		capabilities = append(capabilities, protocol.CapabilityComposeFileNames)
 		capabilities = append(capabilities, protocol.CapabilityFileMtimeSync)
+		capabilities = append(capabilities, protocol.CapabilityStackDirAdoption)
 	}
 
 	// Get hawser version from config (set at build time via ldflags)
@@ -471,7 +477,7 @@ func (c *Client) handleMessage(data []byte) {
 // their own timeout (ComposeTimeout, default 900s) instead of inheriting the
 // short RequestTimeout (default 30s) meant for ordinary Docker API calls.
 func (c *Client) requestTimeout(path string) time.Duration {
-	if path == "/_hawser/compose" {
+	if path == "/_hawser/compose" || strings.HasPrefix(path, "/_hawser/stack-dir-adoption/") {
 		return time.Duration(c.cfg.ComposeTimeout) * time.Second
 	}
 	return time.Duration(c.cfg.RequestTimeout) * time.Second
@@ -503,6 +509,24 @@ func (c *Client) handleRequest(req *protocol.RequestMessage) {
 	// Check if this is a compose operation
 	if req.Path == "/_hawser/compose" {
 		c.handleComposeRequest(ctx, req)
+		return
+	}
+	if strings.HasPrefix(req.Path, "/_hawser/host-files?") || req.Path == "/_hawser/host-files" {
+		parsed, err := url.Parse(req.Path)
+		if err == nil {
+			var listing *docker.HostFileListing
+			listing, err = docker.ListHostFiles(parsed.Query().Get("path"))
+			if err == nil {
+				body, _ := json.Marshal(listing)
+				c.sendJSON(protocol.NewResponseMessage(req.RequestID, http.StatusOK, nil, body))
+				return
+			}
+		}
+		c.sendJSON(protocol.NewErrorMessage(req.RequestID, err.Error(), "HOST_FILES_ERROR"))
+		return
+	}
+	if strings.HasPrefix(req.Path, "/_hawser/stack-dir-adoption/") {
+		c.handleStackDirAdoptionRequest(ctx, req)
 		return
 	}
 
@@ -682,6 +706,67 @@ func (c *Client) handleComposeRequest(ctx context.Context, req *protocol.Request
 		statusCode = http.StatusInternalServerError
 	}
 
+	c.sendJSON(protocol.NewResponseMessage(req.RequestID, statusCode, nil, respBody))
+}
+
+func (c *Client) handleStackDirAdoptionRequest(ctx context.Context, req *protocol.RequestMessage) {
+	adopter, ok := c.compose.(interface {
+		PrepareStackDirAdoption(context.Context, *docker.StackDirAdoptionRequest, func(string)) (*docker.StackDirAdoptionResult, error)
+		StackDirAdoptionStatus(*docker.StackDirAdoptionIDRequest) (*docker.StackDirAdoptionResult, error)
+		FinalizeStackDirAdoption(*docker.StackDirAdoptionIDRequest) (*docker.StackDirAdoptionResult, error)
+		RollbackStackDirAdoption(*docker.StackDirAdoptionIDRequest) (*docker.StackDirAdoptionResult, error)
+	})
+	if !ok {
+		c.sendJSON(protocol.NewErrorMessage(req.RequestID, "stack directory adoption is unavailable", "UNSUPPORTED"))
+		return
+	}
+	var result *docker.StackDirAdoptionResult
+	var err error
+	switch {
+	case req.Path == "/_hawser/stack-dir-adoption/check":
+		var access docker.StackDirAccessRequest
+		if err = json.Unmarshal(req.Body, &access); err == nil {
+			result = docker.CheckStackDirAccess(&access)
+		}
+	case req.Path == "/_hawser/stack-dir-adoption/prepare":
+		var adoption docker.StackDirAdoptionRequest
+		if err = json.Unmarshal(req.Body, &adoption); err == nil {
+			var onLine func(string)
+			if adoption.Compose.StreamOutput {
+				onLine = func(line string) {
+					c.sendJSON(protocol.NewStreamMessage(req.RequestID, []byte(line), ""))
+				}
+			}
+			result, err = adopter.PrepareStackDirAdoption(ctx, &adoption, onLine)
+		}
+	case strings.HasSuffix(req.Path, "/status") || strings.HasSuffix(req.Path, "/finalize") || strings.HasSuffix(req.Path, "/rollback"):
+		var adoption docker.StackDirAdoptionIDRequest
+		if err = json.Unmarshal(req.Body, &adoption); err == nil {
+			switch {
+			case strings.HasSuffix(req.Path, "/status"):
+				result, err = adopter.StackDirAdoptionStatus(&adoption)
+			case strings.HasSuffix(req.Path, "/finalize"):
+				result, err = adopter.FinalizeStackDirAdoption(&adoption)
+			default:
+				result, err = adopter.RollbackStackDirAdoption(&adoption)
+			}
+		}
+	default:
+		err = fmt.Errorf("unknown stack directory adoption path")
+	}
+	if err != nil {
+		c.sendJSON(protocol.NewErrorMessage(req.RequestID, err.Error(), "ADOPTION_ERROR"))
+		return
+	}
+	if result == nil {
+		c.sendJSON(protocol.NewErrorMessage(req.RequestID, "empty stack directory adoption response", "ADOPTION_ERROR"))
+		return
+	}
+	respBody, _ := json.Marshal(result)
+	statusCode := http.StatusOK
+	if !result.Success {
+		statusCode = http.StatusConflict
+	}
 	c.sendJSON(protocol.NewResponseMessage(req.RequestID, statusCode, nil, respBody))
 }
 

@@ -47,8 +47,9 @@ type ComposeClient struct {
 	composeCmd     string   // "docker" for v2, "docker-compose" for v1
 	composeArgs    []string // ["compose"] for v2, [] for v1
 	composeChecked bool
-	apiVersion     string // Docker API version to use (for version negotiation)
-	stacksDir      string // Base directory for stack files
+	apiVersion     string  // Docker API version to use (for version negotiation)
+	stacksDir      string  // Base directory for stack files
+	dockerClient   *Client // Docker API client used for adoption ownership validation
 }
 
 // NewComposeClient creates a new Compose client
@@ -57,6 +58,12 @@ func NewComposeClient(dockerSocket, stacksDir string) *ComposeClient {
 		dockerSocket: dockerSocket,
 		stacksDir:    stacksDir,
 	}
+}
+
+// SetDockerClient supplies the already-connected Docker API client used by
+// transactional stack-directory adoption to verify Compose ownership labels.
+func (c *ComposeClient) SetDockerClient(client *Client) {
+	c.dockerClient = client
 }
 
 // SetAPIVersion sets the Docker API version to use for compose commands.
@@ -110,7 +117,9 @@ type ComposeOperation struct {
 	ComposeFile       string                `json:"composeFile,omitempty"`       // Content of compose file
 	ComposeFileName   string                `json:"composeFileName,omitempty"`   // Explicit compose filename to use (e.g., "docker-compose.prod.yml")
 	ComposeFileNames  []string              `json:"composeFileNames,omitempty"`  // Ordered compose filenames for multi -f (Dockhand multi-file / overrides)
+	EnvFileName       string                `json:"envFileName,omitempty"`       // Explicit env file relative to the managed stack root
 	Files             map[string]string     `json:"files,omitempty"`             // All files to write (relative path -> content)
+	CopyPaths         []string              `json:"copyPaths,omitempty"`         // Host items copied into the managed directory before Compose
 	FileModifiedTimes map[string]int64      `json:"fileModifiedTimes,omitempty"` // Source mtimes in Unix milliseconds; newest file wins
 	Services          []string              `json:"services,omitempty"`          // Specific services to operate on
 	Options           map[string]string     `json:"options,omitempty"`           // Additional options
@@ -512,6 +521,11 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 				ExitCode: 1,
 			}, nil
 		}
+		if len(op.CopyPaths) > 0 {
+			if err := copyStackItems(op.CopyPaths, stackDir); err != nil {
+				return &ComposeResult{Success: false, Error: err.Error(), ExitCode: 1}, nil
+			}
+		}
 
 		// Write all files
 		for relPath, content := range op.Files {
@@ -670,14 +684,23 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 	// (user overrides). Later --env-file entries override earlier ones.
 	if workDir != "" {
 		envPath := filepath.Join(workDir, ".env")
+		if op.EnvFileName != "" {
+			var envErr string
+			envPath, envErr = composeFileAbsPath(stackDir, op.EnvFileName)
+			if envErr != "" {
+				return &ComposeResult{Success: false, Error: envErr, ExitCode: 1}, nil
+			}
+		}
 		if _, err := os.Stat(envPath); err == nil {
 			args = append(args, "--env-file", envPath)
 			log.Debugf("Compose: Adding --env-file %s", envPath)
 		}
 		envDockhandPath := filepath.Join(workDir, ".env.dockhand")
-		if _, err := os.Stat(envDockhandPath); err == nil {
-			args = append(args, "--env-file", envDockhandPath)
-			log.Debugf("Compose: Adding --env-file %s", envDockhandPath)
+		if op.EnvFileName == "" {
+			if _, err := os.Stat(envDockhandPath); err == nil {
+				args = append(args, "--env-file", envDockhandPath)
+				log.Debugf("Compose: Adding --env-file %s", envDockhandPath)
+			}
 		}
 	}
 

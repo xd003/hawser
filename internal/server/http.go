@@ -50,6 +50,10 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 
 	// Create compose client with API version negotiation
 	composeClient := docker.NewComposeClient(cfg.DockerSocket, cfg.StacksDir)
+	composeClient.SetDockerClient(dockerClient)
+	if err := composeClient.RecoverStackDirAdoptions(); err != nil {
+		log.Warnf("Could not recover stack directory adoption artifacts: %v", err)
+	}
 	if version != nil && version.APIVersion != "" {
 		composeClient.SetAPIVersion(version.APIVersion)
 		log.Debugf("Compose client using API version %s", version.APIVersion)
@@ -69,6 +73,24 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 	mux.HandleFunc("/_hawser/health", server.handleHealth)
 	mux.HandleFunc("/_hawser/info", server.handleInfo)
 	mux.HandleFunc("/_hawser/compose", server.handleCompose)
+	mux.HandleFunc("/_hawser/host-files", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		listing, err := docker.ListHostFiles(r.URL.Query().Get("path"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(listing)
+	})
+	mux.HandleFunc("/_hawser/stack-dir-adoption/prepare", server.handleStackDirAdoptionPrepare)
+	mux.HandleFunc("/_hawser/stack-dir-adoption/check", server.handleStackDirAdoptionCheck)
+	mux.HandleFunc("/_hawser/stack-dir-adoption/status", server.handleStackDirAdoptionStatus)
+	mux.HandleFunc("/_hawser/stack-dir-adoption/finalize", server.handleStackDirAdoptionFinalize)
+	mux.HandleFunc("/_hawser/stack-dir-adoption/rollback", server.handleStackDirAdoptionRollback)
 
 	// Wrap with middleware
 	handler := server.authMiddleware(mux)
@@ -132,6 +154,25 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 		}
 		return nil
 	}
+}
+
+func (s *Server) handleStackDirAdoptionCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var request docker.StackDirAccessRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(docker.StackDirAdoptionResult{Success: false, Error: "Invalid request body: " + err.Error()})
+		return
+	}
+	result := docker.CheckStackDirAccess(&request)
+	if !result.Success {
+		w.WriteHeader(http.StatusForbidden)
+	}
+	json.NewEncoder(w).Encode(result)
 }
 
 // handleProxy proxies requests to the Docker API
@@ -508,6 +549,10 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	uptime := getHostUptime()
 
 	w.Header().Set("Content-Type", "application/json")
+	capabilities := []string{"exec", "metrics", "events", "git-sync-delete"}
+	if s.compose.IsAvailable() {
+		capabilities = append(capabilities, "compose", protocol.CapabilityComposeFileNames, protocol.CapabilityFileMtimeSync, protocol.CapabilityStackDirAdoption)
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"agentId":       s.cfg.AgentID,
 		"agentName":     s.cfg.AgentName,
@@ -515,7 +560,7 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"hawserVersion": hawserVersion,
 		"mode":          "standard",
 		"uptime":        uptime,
-		"capabilities":  []string{"exec", "metrics", "events", "compose", "git-sync-delete", protocol.CapabilityComposeFileNames, protocol.CapabilityFileMtimeSync},
+		"capabilities":  capabilities,
 	})
 }
 
@@ -558,6 +603,87 @@ func (s *Server) handleCompose(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 	json.NewEncoder(w).Encode(result)
+}
+
+func (s *Server) handleStackDirAdoptionPrepare(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var request docker.StackDirAdoptionRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(docker.StackDirAdoptionResult{Success: false, Error: "Invalid request body: " + err.Error()})
+		return
+	}
+	result, err := s.compose.PrepareStackDirAdoption(r.Context(), &request, nil)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(docker.StackDirAdoptionResult{Success: false, Error: err.Error()})
+		return
+	}
+	if result == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(docker.StackDirAdoptionResult{Success: false, Error: "empty adoption response"})
+		return
+	}
+	if !result.Success {
+		w.WriteHeader(http.StatusConflict)
+	}
+	json.NewEncoder(w).Encode(result)
+}
+
+func (s *Server) handleStackDirAdoptionAction(w http.ResponseWriter, r *http.Request, action string) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var request docker.StackDirAdoptionIDRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(docker.StackDirAdoptionResult{Success: false, Error: "Invalid request body: " + err.Error()})
+		return
+	}
+	var (
+		result *docker.StackDirAdoptionResult
+		err    error
+	)
+	switch action {
+	case "status":
+		result, err = s.compose.StackDirAdoptionStatus(&request)
+	case "finalize":
+		result, err = s.compose.FinalizeStackDirAdoption(&request)
+	case "rollback":
+		result, err = s.compose.RollbackStackDirAdoption(&request)
+	default:
+		err = fmt.Errorf("unknown adoption action")
+	}
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(docker.StackDirAdoptionResult{Success: false, Error: err.Error()})
+		return
+	}
+	if result == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(docker.StackDirAdoptionResult{Success: false, Error: "empty adoption response"})
+		return
+	}
+	if !result.Success {
+		w.WriteHeader(http.StatusConflict)
+	}
+	json.NewEncoder(w).Encode(result)
+}
+
+func (s *Server) handleStackDirAdoptionStatus(w http.ResponseWriter, r *http.Request) {
+	s.handleStackDirAdoptionAction(w, r, "status")
+}
+
+func (s *Server) handleStackDirAdoptionFinalize(w http.ResponseWriter, r *http.Request) {
+	s.handleStackDirAdoptionAction(w, r, "finalize")
+}
+
+func (s *Server) handleStackDirAdoptionRollback(w http.ResponseWriter, r *http.Request) {
+	s.handleStackDirAdoptionAction(w, r, "rollback")
 }
 
 // authMiddleware checks for valid token if configured
