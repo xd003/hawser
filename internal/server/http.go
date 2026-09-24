@@ -69,6 +69,7 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 	mux.HandleFunc("/_hawser/health", server.handleHealth)
 	mux.HandleFunc("/_hawser/info", server.handleInfo)
 	mux.HandleFunc("/_hawser/compose", server.handleCompose)
+	mux.HandleFunc("/_hawser/host-files", server.handleHostFiles)
 
 	// Wrap with middleware
 	handler := server.authMiddleware(mux)
@@ -517,6 +518,20 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"uptime":        uptime,
 		"capabilities":  protocol.AgentCapabilities(s.compose.IsAvailable()),
 	})
+}
+
+func (s *Server) handleHostFiles(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	listing, err := docker.ListHostFiles(r.URL.Query().Get("path"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(listing)
 }
 
 // handleCompose handles Docker Compose operations
