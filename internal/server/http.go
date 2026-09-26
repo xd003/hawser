@@ -51,6 +51,11 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 	// Create compose client with API version negotiation
 	composeClient := docker.NewComposeClient(cfg.DockerSocket, cfg.StacksDir)
 	composeClient.SetDockerClient(dockerClient)
+	if cfg.Token == "" {
+		log.Warnf("Stack file service disabled: Standard mode requires an authentication token")
+	} else if err := composeClient.EnableStackFiles(); err != nil {
+		log.Warnf("Stack file service unavailable: %v", err)
+	}
 	if err := composeClient.RecoverStackDirAdoptions(); err != nil {
 		log.Warnf("Could not recover stack directory adoption artifacts: %v", err)
 	}
@@ -73,6 +78,7 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 	mux.HandleFunc("/_hawser/health", server.handleHealth)
 	mux.HandleFunc("/_hawser/info", server.handleInfo)
 	mux.HandleFunc("/_hawser/compose", server.handleCompose)
+	mux.HandleFunc("/_hawser/stack-files", server.handleStackFiles)
 	mux.HandleFunc("/_hawser/host-files", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -553,6 +559,9 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	if s.compose.IsAvailable() {
 		capabilities = append(capabilities, "compose", protocol.CapabilityComposeFileNames, protocol.CapabilityFileMtimeSync, protocol.CapabilityStackDirAdoption)
 	}
+	if s.compose.StackFilesAvailable() {
+		capabilities = append(capabilities, protocol.CapabilityStackFiles)
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"agentId":       s.cfg.AgentID,
 		"agentName":     s.cfg.AgentName,
@@ -563,6 +572,30 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"stacksDir":     s.cfg.StacksDir,
 		"capabilities":  capabilities,
 	})
+}
+
+func (s *Server) handleStackFiles(w http.ResponseWriter, r *http.Request) {
+	if s.cfg == nil || s.cfg.Token == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUpgradeRequired)
+		json.NewEncoder(w).Encode(map[string]string{"error": "stack-files-v1 requires a Standard mode token"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, (48<<20)+1))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	status, body := s.compose.HandleStackFiles(r.Context(), data)
+	w.WriteHeader(status)
+	w.Write(body)
 }
 
 // handleCompose handles Docker Compose operations

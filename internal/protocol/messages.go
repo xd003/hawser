@@ -42,6 +42,7 @@ const (
 	CapabilityComposeFileNames = "compose-file-names" // Ordered multi-file compose (-f) via ComposeFileNames
 	CapabilityFileMtimeSync    = "file-mtime-sync"    // Preserve newer remote stack files during compose sync
 	CapabilityStackDirAdoption = "stack-dir-adoption" // Transactional adoption of an existing remote stack directory
+	CapabilityStackFiles       = "stack-files-v1"     // Scoped durable stack file bindings and revision-checked workspace
 )
 
 // BaseMessage is the common structure for all messages

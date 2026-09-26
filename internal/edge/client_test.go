@@ -44,8 +44,10 @@ func (f *fakeComposeClient) IsAvailable() bool { return true }
 // its "type" field, without depending on every concrete protocol.*Message
 // type.
 type sentMessage struct {
-	Type      string `json:"type"`
-	RequestID string `json:"requestId"`
+	Type       string `json:"type"`
+	RequestID  string `json:"requestId"`
+	StatusCode int    `json:"statusCode"`
+	Body       string `json:"body"`
 }
 
 // captureSentMessages spins up a real (loopback) websocket server, connects

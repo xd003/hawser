@@ -109,6 +109,9 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 	// Create compose client with API version negotiation
 	composeClient := docker.NewComposeClient(cfg.DockerSocket, cfg.StacksDir)
 	composeClient.SetDockerClient(dockerClient)
+	if err := composeClient.EnableStackFiles(); err != nil {
+		log.Warnf("Stack file service unavailable: %v", err)
+	}
 	if err := composeClient.RecoverStackDirAdoptions(); err != nil {
 		log.Warnf("Could not recover stack directory adoption artifacts: %v", err)
 	}
@@ -271,6 +274,9 @@ func (c *Client) sendHello() error {
 		capabilities = append(capabilities, protocol.CapabilityComposeFileNames)
 		capabilities = append(capabilities, protocol.CapabilityFileMtimeSync)
 		capabilities = append(capabilities, protocol.CapabilityStackDirAdoption)
+	}
+	if service, ok := c.compose.(interface{ StackFilesAvailable() bool }); ok && service.StackFilesAvailable() {
+		capabilities = append(capabilities, protocol.CapabilityStackFiles)
 	}
 
 	// Get hawser version from config (set at build time via ldflags)
@@ -510,6 +516,22 @@ func (c *Client) handleRequest(req *protocol.RequestMessage) {
 	// Check if this is a compose operation
 	if req.Path == "/_hawser/compose" {
 		c.handleComposeRequest(ctx, req)
+		return
+	}
+	if req.Path == "/_hawser/stack-files" {
+		if req.Method != http.MethodPost {
+			c.sendJSON(protocol.NewResponseMessage(req.RequestID, http.StatusMethodNotAllowed, nil, []byte(`{"error":"Method not allowed"}`)))
+			return
+		}
+		service, ok := c.compose.(interface {
+			HandleStackFiles(context.Context, []byte) (int, []byte)
+		})
+		if !ok {
+			c.sendJSON(protocol.NewResponseMessage(req.RequestID, http.StatusUpgradeRequired, nil, []byte(`{"error":"stack-files-v1 unavailable"}`)))
+			return
+		}
+		status, body := service.HandleStackFiles(ctx, req.Body)
+		c.sendJSON(protocol.NewResponseMessage(req.RequestID, status, map[string]string{"Content-Type": "application/json"}, body))
 		return
 	}
 	if strings.HasPrefix(req.Path, "/_hawser/host-files?") || req.Path == "/_hawser/host-files" {

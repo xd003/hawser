@@ -50,6 +50,7 @@ type ComposeClient struct {
 	apiVersion     string  // Docker API version to use (for version negotiation)
 	stacksDir      string  // Base directory for stack files
 	dockerClient   *Client // Docker API client used for adoption ownership validation
+	stackFiles     *StackFileService
 }
 
 // NewComposeClient creates a new Compose client
@@ -64,6 +65,27 @@ func NewComposeClient(dockerSocket, stacksDir string) *ComposeClient {
 // transactional stack-directory adoption to verify Compose ownership labels.
 func (c *ComposeClient) SetDockerClient(client *Client) {
 	c.dockerClient = client
+}
+
+// EnableStackFiles prepares the private binding registry. An unavailable or
+// incorrectly permissioned registry disables the capability instead of
+// advertising a file API that cannot preserve bindings across restarts.
+func (c *ComposeClient) EnableStackFiles() error {
+	service, err := NewStackFileService(c.stacksDir, c.dockerClient)
+	if err != nil {
+		return err
+	}
+	c.stackFiles = service
+	return nil
+}
+
+func (c *ComposeClient) StackFilesAvailable() bool { return c.stackFiles != nil }
+
+func (c *ComposeClient) HandleStackFiles(ctx context.Context, body []byte) (int, []byte) {
+	if c.stackFiles == nil {
+		return stackFileResponse(426, nil, fileError(426, "stack-files-v1 is unavailable"))
+	}
+	return c.stackFiles.Handle(ctx, body)
 }
 
 // SetAPIVersion sets the Docker API version to use for compose commands.
@@ -111,28 +133,30 @@ type RegistryCredentials struct {
 
 // ComposeOperation represents a compose operation request
 type ComposeOperation struct {
-	Operation         string                `json:"operation"` // up, down, pull, ps, logs
-	ProjectName       string                `json:"projectName"`
-	WorkDir           string                `json:"workDir"`
-	ComposeFile       string                `json:"composeFile,omitempty"`       // Content of compose file
-	ComposeFileName   string                `json:"composeFileName,omitempty"`   // Explicit compose filename to use (e.g., "docker-compose.prod.yml")
-	ComposeFileNames  []string              `json:"composeFileNames,omitempty"`  // Ordered compose filenames for multi -f (Dockhand multi-file / overrides)
-	EnvFileName       string                `json:"envFileName,omitempty"`       // Explicit env file relative to the managed stack root
-	Files             map[string]string     `json:"files,omitempty"`             // All files to write (relative path -> content)
-	CopyPaths         []string              `json:"copyPaths,omitempty"`         // Host items copied into the managed directory before Compose
-	FileModifiedTimes map[string]int64      `json:"fileModifiedTimes,omitempty"` // Source mtimes in Unix milliseconds; newest file wins
-	Services          []string              `json:"services,omitempty"`          // Specific services to operate on
-	Options           map[string]string     `json:"options,omitempty"`           // Additional options
-	EnvVars           map[string]string     `json:"envVars,omitempty"`           // Environment variables for variable substitution
-	Registries        []RegistryCredentials `json:"registries,omitempty"`        // Registry credentials for docker login
-	ForceRecreate     bool                  `json:"forceRecreate,omitempty"`     // Force recreation of containers (--force-recreate)
-	RemoveVolumes     bool                  `json:"removeVolumes,omitempty"`     // Remove volumes on down (--volumes)
-	ServiceName       string                `json:"serviceName,omitempty"`       // Target specific service only (with --no-deps)
-	Build             bool                  `json:"build,omitempty"`             // Build images before starting (--build)
-	NoBuildCache      bool                  `json:"noBuildCache,omitempty"`      // Build without cache (--no-cache)
-	PullPolicy        string                `json:"pullPolicy,omitempty"`        // Pull policy: 'always' | 'missing' | 'never'
-	FilesToDelete     []FileToDelete        `json:"filesToDelete,omitempty"`     // Git deletion sync (#966): hash-verified file removals
-	RemoveFiles       bool                  `json:"removeFiles,omitempty"`       // On down: remove the stack directory entirely (#1162, stack deletion only)
+	Operation               string                `json:"operation"` // up, down, pull, ps, logs
+	ProjectName             string                `json:"projectName"`
+	WorkDir                 string                `json:"workDir"`
+	ComposeFile             string                `json:"composeFile,omitempty"`             // Content of compose file
+	ComposeFileName         string                `json:"composeFileName,omitempty"`         // Explicit compose filename to use (e.g., "docker-compose.prod.yml")
+	ComposeFileNames        []string              `json:"composeFileNames,omitempty"`        // Ordered compose filenames for multi -f (Dockhand multi-file / overrides)
+	EnvFileName             string                `json:"envFileName,omitempty"`             // Explicit env file relative to the managed stack root
+	Files                   map[string]string     `json:"files,omitempty"`                   // All files to write (relative path -> content)
+	CopyPaths               []string              `json:"copyPaths,omitempty"`               // Host items copied into the managed directory before Compose
+	FileModifiedTimes       map[string]int64      `json:"fileModifiedTimes,omitempty"`       // Source mtimes in Unix milliseconds; newest file wins
+	Services                []string              `json:"services,omitempty"`                // Specific services to operate on
+	Options                 map[string]string     `json:"options,omitempty"`                 // Additional options
+	EnvVars                 map[string]string     `json:"envVars,omitempty"`                 // Environment variables for variable substitution
+	Registries              []RegistryCredentials `json:"registries,omitempty"`              // Registry credentials for docker login
+	ForceRecreate           bool                  `json:"forceRecreate,omitempty"`           // Force recreation of containers (--force-recreate)
+	RemoveVolumes           bool                  `json:"removeVolumes,omitempty"`           // Remove volumes on down (--volumes)
+	ServiceName             string                `json:"serviceName,omitempty"`             // Target specific service only (with --no-deps)
+	Build                   bool                  `json:"build,omitempty"`                   // Build images before starting (--build)
+	NoBuildCache            bool                  `json:"noBuildCache,omitempty"`            // Build without cache (--no-cache)
+	PullPolicy              string                `json:"pullPolicy,omitempty"`              // Pull policy: 'always' | 'missing' | 'never'
+	FilesToDelete           []FileToDelete        `json:"filesToDelete,omitempty"`           // Git deletion sync (#966): hash-verified file removals
+	RemoveFiles             bool                  `json:"removeFiles,omitempty"`             // On down: remove the stack directory entirely (#1162, stack deletion only)
+	BoundRoot               bool                  `json:"boundRoot,omitempty"`               // Resolve project through the durable Hawser binding; never stage files
+	UpdateBoundComposeFiles bool                  `json:"updateBoundComposeFiles,omitempty"` // Commit new ordered paths only after a successful bound up
 	// StreamOutput requests that Execute's onLine callback be wired up, so the
 	// caller receives one message per output line as the compose command runs
 	// instead of only the buffered result at the end. Defaults to false: a
@@ -464,6 +488,75 @@ func teeLines(dst *bytes.Buffer, onLine func(string)) (io.Writer, func()) {
 // use (e.g. Client.sendJSON, which takes its own lock) needs no extra
 // synchronization; a callback with its own mutable state does.
 func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLine func(string)) (*ComposeResult, error) {
+	var boundRoot string
+	var boundRels []string
+	var pendingBinding stackFileBinding
+	if op.UpdateBoundComposeFiles && (!op.BoundRoot || op.Operation != "up" || len(op.ComposeFileNames) == 0) {
+		return &ComposeResult{Error: "updating bound Compose paths requires bound up with ordered composeFileNames", ExitCode: 1}, nil
+	}
+	if op.BoundRoot {
+		if c.stackFiles == nil {
+			return &ComposeResult{Error: "stack-files-v1 is unavailable", ExitCode: 1}, nil
+		}
+		if len(op.ProjectName) > 128 || !safeAdoptionName.MatchString(op.ProjectName) || op.WorkDir != "" || op.ComposeFile != "" ||
+			op.ComposeFileName != "" || len(op.Files) != 0 || len(op.CopyPaths) != 0 ||
+			len(op.FileModifiedTimes) != 0 || len(op.FilesToDelete) != 0 || op.RemoveFiles {
+			return &ComposeResult{Error: "bound Compose requires a project binding and no legacy staging, workDir, or removeFiles", ExitCode: 1}, nil
+		}
+		c.stackFiles.mu.Lock()
+		defer c.stackFiles.mu.Unlock()
+		binding, root, err := c.stackFiles.openBound(op.ProjectName)
+		if err != nil {
+			return &ComposeResult{Error: err.Error(), ExitCode: 1}, nil
+		}
+		defer root.Close()
+		if op.UpdateBoundComposeFiles {
+			if err := validateComposeNames(op.ComposeFileNames); err != nil {
+				return &ComposeResult{Error: err.Error(), ExitCode: 1}, nil
+			}
+			boundRels = op.ComposeFileNames
+			pendingBinding = binding
+			pendingBinding.ComposeFileNames = append([]string(nil), boundRels...)
+		} else {
+			if len(op.ComposeFileNames) != 0 {
+				if len(op.ComposeFileNames) != len(binding.ComposeFileNames) {
+					return &ComposeResult{Error: "requested Compose paths differ from bound project paths", ExitCode: 1}, nil
+				}
+				for i, path := range op.ComposeFileNames {
+					if path != binding.ComposeFileNames[i] {
+						return &ComposeResult{Error: "requested Compose paths differ from bound project paths", ExitCode: 1}, nil
+					}
+				}
+			}
+			boundRels = binding.ComposeFileNames
+		}
+		for _, path := range boundRels {
+			if _, _, err := fileRevision(root, path); err != nil {
+				return &ComposeResult{Error: fmt.Sprintf("bound Compose file %s is unavailable: %v", path, err), ExitCode: 1}, nil
+			}
+		}
+		if op.EnvFileName != "" {
+			if _, _, err := fileRevision(root, op.EnvFileName); err != nil {
+				return &ComposeResult{Error: fmt.Sprintf("bound environment file %s is unavailable: %v", op.EnvFileName, err), ExitCode: 1}, nil
+			}
+		}
+		if op.EnvFileName == "" {
+			for _, name := range []string{".env", ".env.dockhand"} {
+				rel := name
+				if dir := filepath.Dir(boundRels[0]); dir != "." {
+					rel = filepath.ToSlash(filepath.Join(dir, name))
+				}
+				info, err := safeEntry(root, rel, true, false)
+				if err != nil {
+					return &ComposeResult{Error: err.Error(), ExitCode: 1}, nil
+				}
+				if info != nil && !info.Mode().IsRegular() {
+					return &ComposeResult{Error: "invalid bound environment file: " + rel, ExitCode: 1}, nil
+				}
+			}
+		}
+		boundRoot = binding.Root
+	}
 	// Detect compose command on first use
 	if err := c.detectComposeCommand(); err != nil {
 		return &ComposeResult{
@@ -491,7 +584,10 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 	var stackDir string
 	useDiskCompose := false
 
-	if len(op.Files) > 0 && c.stacksDir != "" {
+	if op.BoundRoot {
+		stackDir = boundRoot
+		useDiskCompose = true
+	} else if len(op.Files) > 0 && c.stacksDir != "" {
 		// File-based approach - write all files to stack directory
 		stackDir = filepath.Join(c.stacksDir, op.ProjectName)
 
@@ -649,7 +745,16 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 
 	var composeRels []string
 	if useDiskCompose && stackDir != "" {
-		fileFlags, fallbackPath, rels, errMsg := resolveComposeFileFlags(stackDir, op)
+		var fileFlags []string
+		var fallbackPath string
+		var rels []string
+		var errMsg string
+		if op.BoundRoot {
+			rels = boundRels
+			fileFlags, errMsg = flagsFromRelPaths(stackDir, rels, true)
+		} else {
+			fileFlags, fallbackPath, rels, errMsg = resolveComposeFileFlags(stackDir, op)
+		}
 		if errMsg != "" {
 			return &ComposeResult{
 				Success:  false,
@@ -861,9 +966,20 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 		if result.Error == "" {
 			result.Error = err.Error()
 		}
+		if op.BoundRoot && op.Operation == "up" {
+			result.Error += "; saved remote files remain, and containers may have been partially changed"
+		}
 		log.Debugf("Compose failed: exit=%d error=%s", result.ExitCode, result.Error)
 	} else {
 		log.Debugf("Compose completed: %s (project=%s)", op.Operation, op.ProjectName)
+	}
+
+	if result.Success && op.UpdateBoundComposeFiles {
+		if saveErr := c.stackFiles.save(op.ProjectName, pendingBinding); saveErr != nil {
+			result.Success = false
+			result.ExitCode = 1
+			result.Error = "Compose started but could not commit bound Compose paths: " + saveErr.Error() + "; saved remote files remain and containers may have been partially changed"
+		}
 	}
 
 	// Stack deletion (#1162): after a successful down with removeFiles, delete
