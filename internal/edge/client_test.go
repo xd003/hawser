@@ -40,12 +40,20 @@ func (f *fakeComposeClient) Execute(_ context.Context, _ *docker.ComposeOperatio
 
 func (f *fakeComposeClient) IsAvailable() bool { return true }
 
+func (f *fakeComposeClient) StackFilesAvailable() bool { return false }
+
+func (f *fakeComposeClient) HandleStackFiles(context.Context, []byte) (int, []byte) {
+	return http.StatusUpgradeRequired, []byte(`{"error":"stack-files-v1 is unavailable"}`)
+}
+
 // sentMessage is the minimal shape needed to classify a captured message by
 // its "type" field, without depending on every concrete protocol.*Message
 // type.
 type sentMessage struct {
-	Type      string `json:"type"`
-	RequestID string `json:"requestId"`
+	Type       string `json:"type"`
+	RequestID  string `json:"requestId"`
+	StatusCode int    `json:"statusCode"`
+	Body       string `json:"body"`
 }
 
 // captureSentMessages spins up a real (loopback) websocket server, connects

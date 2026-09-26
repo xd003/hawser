@@ -50,6 +50,11 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 
 	// Create compose client with API version negotiation
 	composeClient := docker.NewComposeClient(cfg.DockerSocket, cfg.StacksDir)
+	if cfg.Token == "" {
+		log.Warnf("Stack file service disabled: Standard mode requires an authentication token")
+	} else if err := composeClient.EnableStackFiles(dockerClient); err != nil {
+		log.Warnf("Stack file service unavailable: %v", err)
+	}
 	if version != nil && version.APIVersion != "" {
 		composeClient.SetAPIVersion(version.APIVersion)
 		log.Debugf("Compose client using API version %s", version.APIVersion)
@@ -69,6 +74,7 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 	mux.HandleFunc("/_hawser/health", server.handleHealth)
 	mux.HandleFunc("/_hawser/info", server.handleInfo)
 	mux.HandleFunc("/_hawser/compose", server.handleCompose)
+	mux.HandleFunc("/_hawser/stack-files", server.handleStackFiles)
 	mux.HandleFunc("/_hawser/host-files", server.handleHostFiles)
 
 	// Wrap with middleware
@@ -517,8 +523,34 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"mode":          "standard",
 		"uptime":        uptime,
 		"stacksDir":     s.cfg.StacksDir,
-		"capabilities":  protocol.AgentCapabilities(s.compose.IsAvailable()),
+		"capabilities":  protocol.AgentCapabilities(s.compose.IsAvailable(), s.compose.StackFilesAvailable()),
 	})
+}
+
+// handleStackFiles serves stack-files-v1. Every response, including
+// rejections, is JSON because Dockhand decodes the body before the status.
+func (s *Server) handleStackFiles(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	fail := func(status int, message string) {
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": message})
+	}
+	if s.cfg.Token == "" {
+		fail(http.StatusUpgradeRequired, "stack-files-v1 requires a Standard mode token")
+		return
+	}
+	if r.Method != http.MethodPost {
+		fail(http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, docker.MaxStackRequestBytes+1))
+	if err != nil {
+		fail(http.StatusBadRequest, err.Error())
+		return
+	}
+	status, body := s.compose.HandleStackFiles(r.Context(), data)
+	w.WriteHeader(status)
+	w.Write(body)
 }
 
 func (s *Server) handleHostFiles(w http.ResponseWriter, r *http.Request) {
