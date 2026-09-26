@@ -40,15 +40,19 @@ const (
 	CapabilityEvents           = "events"             // Docker event streaming
 	CapabilityGitSyncDelete    = "git-sync-delete"    // Git deletion sync: hash-verified file removals (#966)
 	CapabilityComposeFileNames = "compose-file-names" // Ordered multi-file compose (-f) via ComposeFileNames
+	CapabilityStackFiles       = "stack-files-v1"     // Scoped durable stack file bindings and revision-checked workspace
 )
 
 // AgentCapabilities is the capability list both Standard (/_hawser/info) and
 // Edge (hello) advertise. Ordered multi-file compose is compiled in wherever
 // Compose is handled, so it rides along with the compose capability.
-func AgentCapabilities(compose bool) []string {
+func AgentCapabilities(compose, stackFiles bool) []string {
 	capabilities := []string{CapabilityExec, CapabilityMetrics, CapabilityEvents, CapabilityGitSyncDelete}
 	if compose {
 		capabilities = append(capabilities, CapabilityCompose, CapabilityComposeFileNames)
+	}
+	if stackFiles {
+		capabilities = append(capabilities, CapabilityStackFiles)
 	}
 	return capabilities
 }
