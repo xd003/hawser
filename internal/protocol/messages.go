@@ -288,6 +288,17 @@ type ErrorMessage struct {
 	RequestID string `json:"requestId,omitempty"`
 	Error     string `json:"error"`
 	Code      string `json:"code,omitempty"`
+	// Message carries the reason in Dockhand's server-originated errors
+	// ({"type":"error","message":...}), e.g. an auth or duplicate-Docker rejection.
+	Message string `json:"message,omitempty"`
+}
+
+// Reason returns the human-readable error text from either field.
+func (m *ErrorMessage) Reason() string {
+	if m.Error != "" {
+		return m.Error
+	}
+	return m.Message
 }
 
 // NewErrorMessage creates a new error message

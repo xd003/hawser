@@ -324,7 +324,7 @@ func (c *Client) waitForWelcome() error {
 		if err := json.Unmarshal(data, &errMsg); err != nil {
 			return fmt.Errorf("server error (failed to parse error message: %v)", err)
 		}
-		return fmt.Errorf("server error: %s", errMsg.Error)
+		return fmt.Errorf("server error: %s", errMsg.Reason())
 	}
 
 	if msgType != protocol.TypeWelcome {
@@ -432,6 +432,15 @@ func (c *Client) handleMessage(data []byte) {
 	case protocol.TypePong:
 		// Server responded to our ping - just acknowledge receipt (keeps read deadline alive)
 		log.Debugf("Received pong from server")
+
+	case protocol.TypeError:
+		// A post-welcome rejection (e.g. this Docker daemon is already registered
+		// as another Dockhand environment) arrives just before the server closes
+		// the connection; surface why instead of only logging a disconnect.
+		var errMsg protocol.ErrorMessage
+		if err := json.Unmarshal(data, &errMsg); err == nil && errMsg.RequestID == "" {
+			log.Errorf("Dockhand rejected this agent: %s", errMsg.Reason())
+		}
 
 	case protocol.TypeStreamEnd:
 		var end protocol.StreamEndMessage
