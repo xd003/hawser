@@ -40,12 +40,20 @@ func (f *fakeComposeClient) Execute(_ context.Context, _ *docker.ComposeOperatio
 
 func (f *fakeComposeClient) IsAvailable() bool { return true }
 
+func (f *fakeComposeClient) StackFilesAvailable() bool { return false }
+
+func (f *fakeComposeClient) HandleStackFiles(context.Context, []byte) (int, []byte) {
+	return http.StatusUpgradeRequired, []byte(`{"error":"stack-files-v1 is unavailable"}`)
+}
+
 // sentMessage is the minimal shape needed to classify a captured message by
 // its "type" field, without depending on every concrete protocol.*Message
 // type.
 type sentMessage struct {
-	Type      string `json:"type"`
-	RequestID string `json:"requestId"`
+	Type       string `json:"type"`
+	RequestID  string `json:"requestId"`
+	StatusCode int    `json:"statusCode"`
+	Body       string `json:"body"`
 }
 
 // captureSentMessages spins up a real (loopback) websocket server, connects
@@ -196,6 +204,7 @@ func TestRequestTimeout_ComposeGetsOwnBudget(t *testing.T) {
 		want time.Duration
 	}{
 		{"compose path gets ComposeTimeout", "/_hawser/compose", 900 * time.Second},
+		{"stack-files path gets the stack-files budget", "/_hawser/stack-files", 5 * time.Minute},
 		{"regular docker path gets RequestTimeout", "/containers/json", 30 * time.Second},
 		{"path containing compose as substring is not special-cased", "/_hawser/compose/logs", 30 * time.Second},
 		{"root path gets RequestTimeout", "/", 30 * time.Second},

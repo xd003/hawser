@@ -40,6 +40,8 @@ import (
 type composeExecutor interface {
 	Execute(ctx context.Context, op *docker.ComposeOperation, onLine func(string)) (*docker.ComposeResult, error)
 	IsAvailable() bool
+	StackFilesAvailable() bool
+	HandleStackFiles(ctx context.Context, body []byte) (int, []byte)
 }
 
 // Client represents the Edge mode WebSocket client
@@ -108,6 +110,9 @@ func Run(cfg *config.Config, stop <-chan os.Signal) error {
 
 	// Create compose client with API version negotiation
 	composeClient := docker.NewComposeClient(cfg.DockerSocket, cfg.StacksDir)
+	if err := composeClient.EnableStackFiles(dockerClient); err != nil {
+		log.Warnf("Stack file service unavailable: %v", err)
+	}
 	if version != nil && version.APIVersion != "" {
 		composeClient.SetAPIVersion(version.APIVersion)
 		log.Debugf("Compose client using API version %s", version.APIVersion)
@@ -259,7 +264,7 @@ func (c *Client) sendHello() error {
 
 	hostname, _ := os.Hostname()
 
-	capabilities := protocol.AgentCapabilities(c.compose.IsAvailable())
+	capabilities := protocol.AgentCapabilities(c.compose.IsAvailable(), c.compose.StackFilesAvailable())
 
 	// Get hawser version from config (set at build time via ldflags)
 	hawserVersion := c.cfg.Version
@@ -465,9 +470,14 @@ func (c *Client) handleMessage(data []byte) {
 // waiting on depends_on health checks routinely take minutes — so they get
 // their own timeout (ComposeTimeout, default 900s) instead of inheriting the
 // short RequestTimeout (default 30s) meant for ordinary Docker API calls.
+// Stack-files requests get docker.StackFilesTimeout: a full apply batch is
+// tens of MiB written and fsynced file by file.
 func (c *Client) requestTimeout(path string) time.Duration {
-	if path == "/_hawser/compose" {
+	switch path {
+	case "/_hawser/compose":
 		return time.Duration(c.cfg.ComposeTimeout) * time.Second
+	case "/_hawser/stack-files":
+		return max(docker.StackFilesTimeout, time.Duration(c.cfg.RequestTimeout)*time.Second)
 	}
 	return time.Duration(c.cfg.RequestTimeout) * time.Second
 }
@@ -498,6 +508,15 @@ func (c *Client) handleRequest(req *protocol.RequestMessage) {
 	// Check if this is a compose operation
 	if req.Path == "/_hawser/compose" {
 		c.handleComposeRequest(ctx, req)
+		return
+	}
+	if req.Path == "/_hawser/stack-files" {
+		if req.Method != http.MethodPost {
+			c.sendJSON(protocol.NewResponseMessage(req.RequestID, http.StatusMethodNotAllowed, nil, []byte(`{"error":"Method not allowed"}`)))
+			return
+		}
+		status, body := c.compose.HandleStackFiles(ctx, req.Body)
+		c.sendJSON(protocol.NewResponseMessage(req.RequestID, status, map[string]string{"Content-Type": "application/json"}, body))
 		return
 	}
 	if req.Path == "/_hawser/host-files" || strings.HasPrefix(req.Path, "/_hawser/host-files?") {
