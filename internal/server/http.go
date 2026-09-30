@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Finsys/hawser/internal/config"
@@ -592,7 +593,14 @@ func (s *Server) handleCompose(w http.ResponseWriter, r *http.Request) {
 
 	log.Debugf("Compose operation: %s on %s", op.Operation, op.ProjectName)
 
-	result, err := s.compose.Execute(r.Context(), &op, nil) // nil: REST has no channel for streamed lines
+	// Streaming needs both the op flag and the header: an older Dockhand sets
+	// streamOutput for every transport but only understands a single JSON body.
+	if op.StreamOutput && r.Header.Get(composeStreamHeader) == "ndjson" {
+		s.streamCompose(w, r, &op)
+		return
+	}
+
+	result, err := s.compose.Execute(r.Context(), &op, nil)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(docker.ComposeResult{
@@ -606,6 +614,50 @@ func (s *Server) handleCompose(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 	json.NewEncoder(w).Encode(result)
+}
+
+// composeStreamHeader opts a Standard compose request into NDJSON output.
+const composeStreamHeader = "X-Hawser-Stream-Output"
+
+// composeStreamFrame is one NDJSON record: "line" frames carry one output line
+// as Compose produces it; the final "result" frame carries the status and body
+// the non-streaming response would have had.
+type composeStreamFrame struct {
+	Type   string                `json:"type"`
+	Line   string                `json:"line,omitempty"`
+	Status int                   `json:"status,omitempty"`
+	Result *docker.ComposeResult `json:"result,omitempty"`
+}
+
+// streamCompose runs op and writes its output as NDJSON, flushing every line.
+// The HTTP status is always 200 because it is sent before Compose finishes.
+func (s *Server) streamCompose(w http.ResponseWriter, r *http.Request, op *docker.ComposeOperation) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush() // headers now, so Dockhand's header timeout never sees a long build
+	}
+	encoder := json.NewEncoder(w)
+	var mu sync.Mutex // Execute calls onLine from the stdout and stderr readers concurrently
+	emit := func(frame composeStreamFrame) {
+		mu.Lock()
+		defer mu.Unlock()
+		if encoder.Encode(frame) == nil && flusher != nil {
+			flusher.Flush()
+		}
+	}
+	result, err := s.compose.Execute(r.Context(), op, func(line string) {
+		emit(composeStreamFrame{Type: "line", Line: line})
+	})
+	status := http.StatusOK
+	if err != nil {
+		result = &docker.ComposeResult{Success: false, Error: "Compose error: " + err.Error()}
+	}
+	if !result.Success {
+		status = http.StatusInternalServerError
+	}
+	emit(composeStreamFrame{Type: "result", Status: status, Result: result})
 }
 
 // authMiddleware checks for valid token if configured
