@@ -52,6 +52,8 @@ dockers:
       - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
     goarch: amd64
     dockerfile: Dockerfile
+    extra_files:
+      - docker-entrypoint.sh
 
   - image_templates:
       - "ghcr.io/finsys/hawser:{{ .Version }}-arm64"
@@ -65,6 +67,8 @@ dockers:
       - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
     goarch: arm64
     dockerfile: Dockerfile
+    extra_files:
+      - docker-entrypoint.sh
 
   - image_templates:
       - "ghcr.io/finsys/hawser:{{ .Version }}-armv7"
@@ -79,6 +83,8 @@ dockers:
     goarch: arm
     goarm: "7"
     dockerfile: Dockerfile.armv7
+    extra_files:
+      - docker-entrypoint.sh
 
 docker_manifests:
   - name_template: "ghcr.io/finsys/hawser:{{ .Version }}"

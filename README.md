@@ -356,6 +356,30 @@ docker run -d \
   ghcr.io/finsys/hawser:latest
 ```
 
+### Running as a non-root user
+
+By default the container runs as root. Set `PUID` and/or `PGID` (same convention as the Dockhand image) and the entrypoint creates that user, takes ownership of `STACKS_DIR`, grants it access to the Docker socket and drops privileges:
+
+```bash
+docker run -d \
+  --name hawser \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /opt/hawser-stacks:/opt/hawser-stacks \
+  -e STACKS_DIR=/opt/hawser-stacks \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e TOKEN=your-secret-token \
+  -p 2376:2376 \
+  ghcr.io/finsys/hawser:latest
+```
+
+Stack files created by Hawser (e.g. git-based stacks) are then owned by `PUID:PGID`.
+
+- On start, only entries under `STACKS_DIR` that are owned by root are re-owned, so existing root-owned stacks are fixed while data owned by other UIDs (e.g. a database directory) is left untouched.
+- `PUID` must not collide with a user baked into the image (e.g. `65534`); Hawser exits with an error if it does.
+- Requires a writable root filesystem (the user is created at start) and a container started as root. With `--read-only`, or when using a `user:` / `--user` directive instead, `PUID`/`PGID` are not applied and Hawser runs as the given user as-is.
+- Files you mount for Hawser to read (`TLS_CERT`, `TLS_KEY`, `CA_CERT`) must be readable by that UID.
+
 ### Building Docker image locally
 
 For local development or custom builds, use the multi-stage `Dockerfile.dev` which builds from source:
@@ -474,6 +498,7 @@ Hawser is configured via environment variables:
 | `ALLOW_INSECURE_NO_AUTH` | Permit Standard mode to bind a non-loopback address with no `TOKEN` (insecure; only for networks isolated by other means) | `false` |
 | `DOCKER_SOCKET` | Docker socket path | `/var/run/docker.sock` |
 | `STACKS_DIR` | Directory for compose stack files (requires Dockhand 1.0.5+). Use a host path bind mount with matching paths if stacks use relative file bind mounts. | `/data/stacks` |
+| `PUID` / `PGID` | Docker image only. Run Hawser as this UID/GID instead of root (the unset one defaults to `1001`; `PUID=0` keeps root). See [Running as a non-root user](#running-as-a-non-root-user). | unset (root) |
 | `AGENT_ID` | Unique agent identifier | Auto-generated UUID |
 | `AGENT_NAME` | Human-readable agent name | Hostname |
 | `HEARTBEAT_INTERVAL` | Heartbeat interval in seconds | `30` |
