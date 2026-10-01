@@ -46,6 +46,7 @@ RUN APKO_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") 
     "    - docker-cli-buildx" \
     "    - git" \
     "    - wget" \
+    "    - su-exec" \
     "entrypoint:" \
     "  command: /bin/sh -l" \
     "archs:" \
@@ -94,6 +95,10 @@ VOLUME /data/stacks
 COPY hawser /usr/local/bin/hawser
 RUN chmod +x /usr/local/bin/hawser
 
+# Entrypoint handles optional PUID/PGID (drops privileges via su-exec)
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Expose default port
 EXPOSE 2376
 
@@ -101,5 +106,6 @@ EXPOSE 2376
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD if [ -n "$TLS_CERT" ]; then wget -q --spider --no-check-certificate https://localhost:${PORT}/_hawser/health; else wget -q --spider http://localhost:${PORT}/_hawser/health; fi || exit 1
 
-# Run as root to access Docker socket (can be changed with --user flag)
-ENTRYPOINT ["/usr/local/bin/hawser"]
+# Runs as root by default. Set PUID/PGID to drop to that user (needs the
+# Docker socket group; the entrypoint adds it automatically), or use --user.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
