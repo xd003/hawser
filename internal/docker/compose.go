@@ -680,15 +680,19 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 		}
 	}
 
+	// Shared global flags (-p, -f, --env-file) for a pre-up build step.
+	globalArgs := slices.Clone(args)
+
 	// Add operation-specific arguments
 	switch op.Operation {
 	case "up":
 		args = append(args, "up", "-d", "--remove-orphans")
-		if op.Build {
+		// --no-cache is a `compose build` flag that `up` rejects ("unknown flag:
+		// --no-cache"), so a no-cache rebuild runs `build --no-cache` first and
+		// `up` then reuses the fresh images without --build. Dockhand only honours
+		// no-cache together with build.
+		if op.Build && !op.NoBuildCache {
 			args = append(args, "--build")
-		}
-		if op.NoBuildCache {
-			args = append(args, "--no-cache")
 		}
 		if op.PullPolicy != "" {
 			args = append(args, "--pull", op.PullPolicy)
@@ -733,6 +737,10 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 
 	// Add specific services if specified (legacy field for backward compatibility)
 	// Reject values starting with "-" to prevent flag injection
+	var buildTargets []string
+	if op.ServiceName != "" {
+		buildTargets = append(buildTargets, op.ServiceName)
+	}
 	for _, svc := range op.Services {
 		if strings.HasPrefix(svc, "-") {
 			return &ComposeResult{
@@ -742,42 +750,23 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 			}, nil
 		}
 		args = append(args, svc)
-	}
-
-	// Build full command args: composeArgs + args
-	fullArgs := append(c.composeArgs, args...)
-
-	// Execute compose command
-	cmd := exec.CommandContext(ctx, c.composeCmd, fullArgs...)
-
-	// Structural guard for the whole "Wait() hangs on an output-copy goroutine"
-	// class: when the context fires, exec kills the process but Wait() still
-	// blocks on the stdout/stderr copier. WaitDelay caps that wait -- after the
-	// process is gone, Wait() returns within WaitDelay even if a copier is
-	// wedged, so a timeout always bites regardless of which writer stalls.
-	cmd.WaitDelay = 10 * time.Second
-
-	// Set working directory (primary compose file dir when using disk files)
-	if workDir != "" {
-		cmd.Dir = workDir
-	} else if op.WorkDir != "" {
-		cmd.Dir = op.WorkDir
+		buildTargets = append(buildTargets, svc)
 	}
 
 	// Set clean environment to prevent host env vars from overriding compose stack variables
-	cmd.Env = []string{
+	env := []string{
 		fmt.Sprintf("DOCKER_HOST=unix://%s", c.dockerSocket),
 	}
 	for _, key := range []string{"PATH", "HOME", "USER"} {
 		if val, ok := os.LookupEnv(key); ok {
-			cmd.Env = append(cmd.Env, key+"="+val)
+			env = append(env, key+"="+val)
 		}
 	}
 
 	// Set API version for compatibility with newer Docker daemons
 	// This allows older docker CLI to work with newer daemons
 	if c.apiVersion != "" {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("DOCKER_API_VERSION=%s", c.apiVersion))
+		env = append(env, fmt.Sprintf("DOCKER_API_VERSION=%s", c.apiVersion))
 		log.Debugf("Compose: Using API version %s", c.apiVersion)
 	}
 
@@ -796,30 +785,62 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 			log.Warnf("Compose: Blocked dangerous environment variable: %s", key)
 			continue
 		}
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
+		env = append(env, fmt.Sprintf("%s=%s", key, value))
 	}
 
-	// Log the command being executed
-	log.Debugf("Compose: %s %s (project=%s)", c.composeCmd, strings.Join(fullArgs, " "), op.ProjectName)
+	run := func(args []string) (stdout, stderr bytes.Buffer, err error) {
+		// Build full command args: composeArgs + args
+		fullArgs := append(slices.Clone(c.composeArgs), args...)
 
-	// Capture output. Compose writes progress to stderr, not stdout in most
-	// cases -- but WITH a build the bulk of the output lands on stdout
-	// (measured in task 0), so both streams are wired to onLine, not stderr
-	// alone.
+		cmd := exec.CommandContext(ctx, c.composeCmd, fullArgs...)
+
+		// Structural guard for the whole "Wait() hangs on an output-copy goroutine"
+		// class: when the context fires, exec kills the process but Wait() still
+		// blocks on the stdout/stderr copier. WaitDelay caps that wait -- after the
+		// process is gone, Wait() returns within WaitDelay even if a copier is
+		// wedged, so a timeout always bites regardless of which writer stalls.
+		cmd.WaitDelay = 10 * time.Second
+
+		// Set working directory (primary compose file dir when using disk files)
+		if workDir != "" {
+			cmd.Dir = workDir
+		} else if op.WorkDir != "" {
+			cmd.Dir = op.WorkDir
+		}
+		cmd.Env = env
+
+		// Log the command being executed
+		log.Debugf("Compose: %s %s (project=%s)", c.composeCmd, strings.Join(fullArgs, " "), op.ProjectName)
+
+		// Capture output. Compose writes progress to stderr, not stdout in most
+		// cases -- but WITH a build the bulk of the output lands on stdout
+		// (measured in task 0), so both streams are wired to onLine, not stderr
+		// alone.
+		stdoutWriter, closeStdout := teeLines(&stdout, onLine)
+		stderrWriter, closeStderr := teeLines(&stderr, onLine)
+		cmd.Stdout = stdoutWriter
+		cmd.Stderr = stderrWriter
+
+		// Pipe compose content via stdin if provided
+		if stdinContent != "" {
+			cmd.Stdin = strings.NewReader(stdinContent)
+		}
+
+		err = cmd.Run()
+		closeStdout() // after Run(), before the streamed buffers are read below
+		closeStderr()
+		return stdout, stderr, err
+	}
+
 	var stdout, stderr bytes.Buffer
-	stdoutWriter, closeStdout := teeLines(&stdout, onLine)
-	stderrWriter, closeStderr := teeLines(&stderr, onLine)
-	cmd.Stdout = stdoutWriter
-	cmd.Stderr = stderrWriter
-
-	// Pipe compose content via stdin if provided
-	if stdinContent != "" {
-		cmd.Stdin = strings.NewReader(stdinContent)
+	var err error
+	if op.Operation == "up" && op.Build && op.NoBuildCache {
+		buildArgs := append(append(globalArgs, "build", "--no-cache"), buildTargets...)
+		stdout, stderr, err = run(buildArgs)
 	}
-
-	err := cmd.Run()
-	closeStdout() // after Run(), before the streamed buffers are read below
-	closeStderr()
+	if err == nil {
+		stdout, stderr, err = run(args)
+	}
 
 	result := &ComposeResult{
 		Success:      err == nil,

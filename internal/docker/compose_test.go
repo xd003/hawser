@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -220,5 +221,54 @@ func TestTeeLinesHandlesHugeLineWithoutDeadlock(t *testing.T) {
 	}
 	if buf.String() != payload {
 		t.Fatalf("dst buffer = %d bytes, want the full %d bytes written", buf.Len(), len(payload))
+	}
+}
+
+// `up` rejects --no-cache ("unknown flag: --no-cache"), so a no-cache rebuild
+// must run `build --no-cache` first and a plain `up` after it -- and a failed
+// build must never reach `up`.
+func TestExecuteNoCacheBuildRunsSeparateBuildBeforeUp(t *testing.T) {
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	script := filepath.Join(dir, "compose")
+	body := "#!/bin/sh\necho \"$*\" >> " + calls + "\n" +
+		"if [ \"$FAIL_BUILD\" = 1 ]; then case \" $* \" in *\" build \"*) exit 3;; esac; fi\n"
+	if err := os.WriteFile(script, []byte(body), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := NewComposeClient("", dir)
+	c.composeChecked = true
+	c.composeCmd = script
+	c.composeArgs = nil
+
+	op := &ComposeOperation{Operation: "up", ProjectName: "demo", ComposeFile: "services: {}", Build: true, NoBuildCache: true, ServiceName: "web"}
+	res, err := c.Execute(context.Background(), op, nil)
+	if err != nil || !res.Success {
+		t.Fatalf("no-cache up failed: %#v %v", res, err)
+	}
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(got)), "\n")
+	if len(lines) != 2 || !strings.HasSuffix(lines[0], " build --no-cache web") ||
+		!strings.Contains(lines[1], " up -d --remove-orphans") || strings.Contains(lines[1], "--no-cache") || strings.Contains(lines[1], "--build") {
+		t.Fatalf("want `build --no-cache web` then plain up, got %q", lines)
+	}
+	if !strings.HasPrefix(lines[0], "-p demo ") {
+		t.Fatalf("build step lost global flags: %q", lines[0])
+	}
+
+	if err := os.Remove(calls); err != nil {
+		t.Fatal(err)
+	}
+	op.EnvVars = map[string]string{"FAIL_BUILD": "1"}
+	res, err = c.Execute(context.Background(), op, nil)
+	if err != nil || res.Success || res.ExitCode != 3 {
+		t.Fatalf("failed build did not fail the up: %#v %v", res, err)
+	}
+	got, _ = os.ReadFile(calls)
+	if strings.Contains(string(got), " up ") {
+		t.Fatalf("up ran after failed build: %q", got)
 	}
 }
