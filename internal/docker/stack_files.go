@@ -22,12 +22,40 @@ import (
 	"time"
 )
 
-const maxStackFileSize = 10 << 20
 const maxStackApplyFiles = 256
-const maxStackApplyBytes = 32 << 20
+const defaultStackFileSizeMB = 10
 
-// MaxStackRequestBytes bounds one stack-files request body on every transport.
-const MaxStackRequestBytes = 48 << 20
+// Stack-file size limits. Set once at startup by ConfigureStackFileLimits,
+// before any stack-files request is served.
+var (
+	maxStackFileSize   int64 = defaultStackFileSizeMB << 20
+	maxStackApplyBytes int64 = 32 << 20
+	// MaxStackRequestBytes bounds one stack-files request body on every transport.
+	MaxStackRequestBytes int64 = 48 << 20
+)
+
+// ConfigureStackFileLimits sets the per-file limit to maxFileMB MiB (values
+// <= 0 keep the 10 MiB default). The per-apply and per-request limits grow so
+// one maximum-size file, base64-encoded with JSON overhead, always fits.
+func ConfigureStackFileLimits(maxFileMB int) {
+	if maxFileMB <= 0 {
+		maxFileMB = defaultStackFileSizeMB
+	}
+	maxStackFileSize = int64(maxFileMB) << 20
+	maxStackApplyBytes = max(32<<20, maxStackFileSize)
+	MaxStackRequestBytes = max(48<<20, maxStackApplyBytes/3*4+(1<<20))
+}
+
+// StackFileSizeLimit is the per-file limit in bytes, advertised to Dockhand so
+// it can refuse an oversized publish before writing anything.
+func StackFileSizeLimit() int64 { return maxStackFileSize }
+
+func fileTooLarge(p string) error {
+	if p == "" {
+		return fileError(http.StatusForbidden, "file exceeds %d MiB", maxStackFileSize>>20)
+	}
+	return fileError(http.StatusForbidden, "file exceeds %d MiB: %s", maxStackFileSize>>20, p)
+}
 
 // StackFilesTimeout bounds one stack-files request on every transport: an apply
 // of a full batch (tens of MiB, fsynced per file) needs far longer than an
@@ -287,7 +315,7 @@ func openRegular(root *os.Root, p string) (*os.File, error) {
 		return nil, fileError(http.StatusForbidden, "not a regular file: %s", p)
 	}
 	if info.Size() > maxStackFileSize {
-		return nil, fileError(http.StatusForbidden, "file exceeds 10 MiB: %s", p)
+		return nil, fileTooLarge(p)
 	}
 	f, err := root.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -313,7 +341,7 @@ func fileRevision(root *os.Root, p string) (string, int64, error) {
 		return "", 0, err
 	}
 	if n > maxStackFileSize {
-		return "", 0, fileError(http.StatusForbidden, "file exceeds 10 MiB: %s", p)
+		return "", 0, fileTooLarge(p)
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
@@ -784,15 +812,15 @@ func atomicFile(root *os.Root, p string, data []byte) error {
 	return folder.Sync()
 }
 func decodeStackFile(s string) ([]byte, error) {
-	if base64.StdEncoding.DecodedLen(len(s)) > maxStackFileSize+2 {
-		return nil, fileError(http.StatusForbidden, "file exceeds 10 MiB")
+	if int64(base64.StdEncoding.DecodedLen(len(s))) > maxStackFileSize+2 {
+		return nil, fileTooLarge("")
 	}
 	b, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		return nil, fileError(http.StatusBadRequest, "invalid base64 file content")
 	}
-	if len(b) > maxStackFileSize {
-		return nil, fileError(http.StatusForbidden, "file exceeds 10 MiB")
+	if int64(len(b)) > maxStackFileSize {
+		return nil, fileTooLarge("")
 	}
 	return b, nil
 }
@@ -959,8 +987,8 @@ func (s *StackFileService) fileAction(r StackFileRequest, b stackFileBinding, ro
 		if err != nil {
 			return nil, err
 		}
-		if len(data) > maxStackFileSize {
-			return nil, fileError(http.StatusForbidden, "file exceeds 10 MiB")
+		if int64(len(data)) > maxStackFileSize {
+			return nil, fileTooLarge(r.Path)
 		}
 		sum := sha256.Sum256(data)
 		return &StackFileResponse{ContentBase64: base64.StdEncoding.EncodeToString(data), Revision: hex.EncodeToString(sum[:]), Size: int64(len(data))}, nil
@@ -1048,7 +1076,7 @@ func applyBoundFiles(root *os.Root, files []StackFileUpload, deletions []FileToD
 	if len(files)+len(deletions) > maxStackApplyFiles {
 		return nil, fileError(http.StatusForbidden, "too many files in apply request")
 	}
-	total := 0
+	var total int64
 	data := make([][]byte, len(files))
 	seen := map[string]bool{}
 	for i, f := range files {
@@ -1065,9 +1093,9 @@ func applyBoundFiles(root *os.Root, files []StackFileUpload, deletions []FileToD
 		if err != nil {
 			return nil, err
 		}
-		total += len(b)
+		total += int64(len(b))
 		if total > maxStackApplyBytes {
-			return nil, fileError(http.StatusForbidden, "apply exceeds 32 MiB")
+			return nil, fileError(http.StatusForbidden, "apply exceeds %d MiB", maxStackApplyBytes>>20)
 		}
 		data[i] = b
 		// Validate the complete batch before changing a single file.
@@ -1176,7 +1204,7 @@ func (s *StackFileService) resolveBoundCompose(op *ComposeOperation) (string, []
 // status/body. Standard and Edge use this exact handler rather than duplicate
 // authorization, revision, or path checking code.
 func (s *StackFileService) Handle(ctx context.Context, body []byte) (int, []byte) {
-	if len(body) > MaxStackRequestBytes {
+	if int64(len(body)) > MaxStackRequestBytes {
 		return stackFileErrorResponse(http.StatusRequestEntityTooLarge, "stack-file request too large")
 	}
 	var r StackFileRequest

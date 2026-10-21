@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/Finsys/hawser/internal/config"
+	"github.com/Finsys/hawser/internal/docker"
 	"github.com/Finsys/hawser/internal/edge"
 	"github.com/Finsys/hawser/internal/log"
 	"github.com/Finsys/hawser/internal/server"
@@ -46,6 +47,7 @@ func main() {
 
 	// Initialize logger before anything else
 	log.Init(cfg.LogLevel)
+	docker.ConfigureStackFileLimits(cfg.MaxStackFileSizeMB)
 
 	// Set version info from ldflags
 	cfg.Version = version

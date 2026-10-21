@@ -146,6 +146,37 @@ func TestStackFilesApplyGuardsRevisionsAndGitDeletions(t *testing.T) {
 	}
 }
 
+// A file above the default 10 MiB, the default 32 MiB apply cap, and (base64-
+// encoded) the default 48 MiB request cap must round-trip once the per-file
+// limit is raised, and be refused again at the default.
+func TestStackFilesConfigurableSizeLimit(t *testing.T) {
+	t.Cleanup(func() { ConfigureStackFileLimits(0) })
+	s, err := NewStackFileService(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stackFilesCall(t, s, StackFileRequest{Action: "bind", ProjectName: "demo", ComposeFileNames: []string{"compose.yml"}}, 200)
+	content := make([]byte, 40<<20)
+	encoded := base64.StdEncoding.EncodeToString(content)
+	upload := StackFileRequest{Action: "apply", ProjectName: "demo", Files: []StackFileUpload{{Path: "video.mp4", ContentBase64: encoded}}}
+
+	ConfigureStackFileLimits(0)
+	stackFilesCall(t, s, upload, http.StatusRequestEntityTooLarge)
+
+	ConfigureStackFileLimits(40)
+	stackFilesCall(t, s, upload, 200)
+	read := stackFilesCall(t, s, StackFileRequest{Action: "read", ProjectName: "demo", Path: "video.mp4"}, 200)
+	sum := sha256.Sum256(content)
+	if read.Size != int64(len(content)) || read.Revision != hex.EncodeToString(sum[:]) {
+		t.Fatalf("large file changed: size %d revision %s", read.Size, read.Revision)
+	}
+
+	ConfigureStackFileLimits(39)
+	if response := stackFilesCall(t, s, StackFileRequest{Action: "read", ProjectName: "demo", Path: "video.mp4"}, 403); response.Error != "file exceeds 39 MiB: video.mp4" {
+		t.Fatalf("unexpected rejection: %q", response.Error)
+	}
+}
+
 func TestStackFilesMigrationExistingOnlyNeverSeeds(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewStackFileService(dir, nil)

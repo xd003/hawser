@@ -525,6 +525,8 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"uptime":        uptime,
 		"stacksDir":     s.cfg.StacksDir,
 		"capabilities":  protocol.AgentCapabilities(s.compose.IsAvailable(), s.compose.StackFilesAvailable()),
+		// Per-file stack-files limit in bytes; Dockhand caps its publish limit to it.
+		"maxStackFileSize": docker.StackFileSizeLimit(),
 	})
 }
 
