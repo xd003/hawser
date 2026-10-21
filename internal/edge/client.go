@@ -287,7 +287,7 @@ func (c *Client) sendHello() error {
 		c.cfg.StacksDir,
 		capabilities,
 	)
-
+	hello.MaxStackFileSize = docker.StackFileSizeLimit()
 	return c.sendJSON(hello)
 }
 

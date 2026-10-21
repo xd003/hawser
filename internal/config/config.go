@@ -48,6 +48,11 @@ type Config struct {
 	// Default 256 (matches Dockhand's MAX_TOTAL_SIZE).
 	MaxMessageSizeMB int
 
+	// Max size in MiB of one stack file Dockhand may read or write (e.g. a large
+	// asset in a git-deployed stack). Per-request limits scale to fit one such
+	// file. Default 10; match Dockhand's GIT_PUBLISH_MAX_FILE_SIZE_MB.
+	MaxStackFileSizeMB int
+
 	// Logging
 	LogLevel string // debug, info, warn, error. Default: info
 
@@ -89,13 +94,14 @@ func Load() (*Config, error) {
 		AgentName: getEnvString("AGENT_NAME", getHostname()),
 
 		// Timeouts
-		HeartbeatInterval: getEnvInt("HEARTBEAT_INTERVAL", 30),
-		RequestTimeout:    getEnvInt("REQUEST_TIMEOUT", 30),
-		ComposeTimeout:    getEnvInt("COMPOSE_TIMEOUT", 900),
-		ReconnectDelay:    getEnvInt("RECONNECT_DELAY", 1),
-		MaxReconnectDelay: getEnvInt("MAX_RECONNECT_DELAY", 60),
-		WelcomeTimeout:    getEnvInt("WELCOME_TIMEOUT", 30),
-		MaxMessageSizeMB:  getEnvInt("MAX_MESSAGE_SIZE_MB", 256),
+		HeartbeatInterval:  getEnvInt("HEARTBEAT_INTERVAL", 30),
+		RequestTimeout:     getEnvInt("REQUEST_TIMEOUT", 30),
+		ComposeTimeout:     getEnvInt("COMPOSE_TIMEOUT", 900),
+		ReconnectDelay:     getEnvInt("RECONNECT_DELAY", 1),
+		MaxReconnectDelay:  getEnvInt("MAX_RECONNECT_DELAY", 60),
+		WelcomeTimeout:     getEnvInt("WELCOME_TIMEOUT", 30),
+		MaxMessageSizeMB:   getEnvInt("MAX_MESSAGE_SIZE_MB", 256),
+		MaxStackFileSizeMB: getEnvInt("MAX_STACK_FILE_SIZE_MB", 10),
 
 		// Logging
 		LogLevel: getEnvString("LOG_LEVEL", "info"),

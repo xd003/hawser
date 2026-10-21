@@ -235,6 +235,7 @@ DOCKER_SOCKET=/var/run/docker.sock
 # MAX_RECONNECT_DELAY=60
 # WELCOME_TIMEOUT=30
 # MAX_MESSAGE_SIZE_MB=256
+# MAX_STACK_FILE_SIZE_MB=10
 ```
 
 **Manual installation steps:**
@@ -552,6 +553,7 @@ Hawser is configured via environment variables:
 | `MAX_RECONNECT_DELAY` | Maximum reconnect delay (Edge mode) | `60` |
 | `WELCOME_TIMEOUT` | Timeout in seconds waiting for welcome after hello (Edge mode) | `30` |
 | `MAX_MESSAGE_SIZE_MB` | Max inbound WebSocket message size in MiB (Edge mode). Bounds the stack-files payload a git deploy can send; raise for very large repos on a well-resourced agent, lower to cap memory on a small edge host. | `256` |
+| `MAX_STACK_FILE_SIZE_MB` | Max size in MiB of one stack file Dockhand can read or write (e.g. a large asset in a git-deployed stack). Per-request limits grow to fit one such file. Hawser reports it to Dockhand, which then refuses a Git deploy with a larger file before writing anything; raise it together with Dockhand's `GIT_PUBLISH_MAX_FILE_SIZE_MB`. In Edge mode keep `MAX_MESSAGE_SIZE_MB` above about 1.4× this value. | `10` |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warn`, `error` | `info` |
 | `SKIP_DF_COLLECTION` | Skip disk usage collection (see below) | - |
 

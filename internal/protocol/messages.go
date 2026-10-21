@@ -75,6 +75,9 @@ type HelloMessage struct {
 	Hostname      string   `json:"hostname"`
 	StacksDir     string   `json:"stacksDir"`
 	Capabilities  []string `json:"capabilities"`
+	// MaxStackFileSize is the agent's per-file stack-files limit in bytes
+	// (MAX_STACK_FILE_SIZE_MB); Dockhand caps its publish limit to it.
+	MaxStackFileSize int64 `json:"maxStackFileSize,omitempty"`
 }
 
 // NewHelloMessage creates a new hello message
