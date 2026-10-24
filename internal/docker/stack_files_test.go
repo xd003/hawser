@@ -146,6 +146,74 @@ func TestStackFilesApplyGuardsRevisionsAndGitDeletions(t *testing.T) {
 	}
 }
 
+func TestStackFilesApplyFileModes(t *testing.T) {
+	s, err := NewStackFileService(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := stackFilesCall(t, s, StackFileRequest{Action: "bind", ProjectName: "demo", ComposeFileNames: []string{"compose.yml"}}, 200).Root
+	payload := func(text string) string { return base64.StdEncoding.EncodeToString([]byte(text)) }
+	revision := func(text string) string { sum := sha256.Sum256([]byte(text)); return hex.EncodeToString(sum[:]) }
+	mode := func(m uint32) *uint32 { return &m }
+	apply := func(status int, files ...StackFileUpload) {
+		t.Helper()
+		stackFilesCall(t, s, StackFileRequest{Action: "apply", ProjectName: "demo", Files: files}, status)
+	}
+	expectMode := func(path string, want os.FileMode) {
+		t.Helper()
+		info, err := os.Stat(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Fatalf("%s mode = %#o, want %#o", path, got, want)
+		}
+	}
+
+	// New files take the published mode.
+	apply(200,
+		StackFileUpload{Path: "start.sh", ContentBase64: payload("v1"), Mode: mode(0755)},
+		StackFileUpload{Path: "config.txt", ContentBase64: payload("v1"), Mode: mode(0644)},
+		StackFileUpload{Path: "legacy.sh", ContentBase64: payload("v1")},
+	)
+	expectMode("start.sh", 0755)
+	expectMode("config.txt", 0644)
+	expectMode("legacy.sh", 0644)
+
+	// Existing files follow the published mode in both directions.
+	apply(200,
+		StackFileUpload{Path: "start.sh", ContentBase64: payload("v2"), Revision: revision("v1"), Mode: mode(0644)},
+		StackFileUpload{Path: "config.txt", ContentBase64: payload("v2"), Revision: revision("v1"), Mode: mode(0755)},
+	)
+	expectMode("start.sh", 0644)
+	expectMode("config.txt", 0755)
+
+	// Without a mode an existing file keeps whatever the host gave it.
+	if err := os.Chmod(filepath.Join(root, "legacy.sh"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	apply(200, StackFileUpload{Path: "legacy.sh", ContentBase64: payload("v2"), Revision: revision("v1")})
+	expectMode("legacy.sh", 0750)
+
+	// Env files stay private whatever mode is sent.
+	apply(200,
+		StackFileUpload{Path: ".env", ContentBase64: payload("A=1"), Mode: mode(0755)},
+		StackFileUpload{Path: "nested/.env.dockhand", ContentBase64: payload("B=2"), Mode: mode(0644)},
+	)
+	expectMode(".env", 0600)
+	expectMode("nested/.env.dockhand", 0600)
+
+	// Any other mode rejects the whole batch before a file changes.
+	for _, bad := range []uint32{0777, 04755, 0600, 0} {
+		apply(http.StatusBadRequest,
+			StackFileUpload{Path: "untouched", ContentBase64: payload("x"), Mode: mode(0755)},
+			StackFileUpload{Path: "bad.sh", ContentBase64: payload("x"), Mode: mode(bad)},
+		)
+	}
+	stackFilesCall(t, s, StackFileRequest{Action: "stat", ProjectName: "demo", Path: "untouched"}, 404)
+	stackFilesCall(t, s, StackFileRequest{Action: "stat", ProjectName: "demo", Path: "bad.sh"}, 404)
+}
+
 // A file above the default 10 MiB, the default 32 MiB apply cap, and (base64-
 // encoded) the default 48 MiB request cap must round-trip once the per-file
 // limit is raised, and be refused again at the default.
