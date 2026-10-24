@@ -87,10 +87,13 @@ type StackFileRequest struct {
 	Recursive bool `json:"recursive,omitempty"`
 }
 
+// StackFileUpload is one file in an apply batch. Mode, when set, is the Git
+// index mode Dockhand publishes (0644 or 0755); older servers omit it.
 type StackFileUpload struct {
-	Path          string `json:"path"`
-	ContentBase64 string `json:"contentBase64"`
-	Revision      string `json:"revision,omitempty"`
+	Path          string  `json:"path"`
+	ContentBase64 string  `json:"contentBase64"`
+	Revision      string  `json:"revision,omitempty"`
+	Mode          *uint32 `json:"mode,omitempty"`
 }
 
 type StackFileEntry struct {
@@ -766,13 +769,20 @@ func preflightUpload(root *os.Root, path, revision string) error {
 	}
 	return revisionGuard(root, path, revision, false)
 }
-func atomicFile(root *os.Root, p string, data []byte) error {
+
+// atomicFile replaces p with data. .env and .env.dockhand are always 0600.
+// Otherwise a requested mode (already validated as 0644 or 0755) wins, even
+// over an existing file; with none, an existing file keeps its mode and a new
+// one is 0644.
+func atomicFile(root *os.Root, p string, data []byte, requested *uint32) error {
 	mode := os.FileMode(0644)
 	secret := filepath.Base(p) == ".env" || filepath.Base(p) == ".env.dockhand"
 	if secret {
 		mode = 0600
+	} else if requested != nil {
+		mode = os.FileMode(*requested)
 	}
-	if info, err := root.Lstat(p); err == nil && info.Mode().IsRegular() && !secret {
+	if info, err := root.Lstat(p); err == nil && info.Mode().IsRegular() && !secret && requested == nil {
 		mode = info.Mode().Perm()
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
@@ -1017,7 +1027,7 @@ func (s *StackFileService) fileAction(r StackFileRequest, b stackFileBinding, ro
 		if err := revisionGuard(root, r.Path, r.Revision, true); err != nil {
 			return nil, err
 		}
-		if err := atomicFile(root, r.Path, data); err != nil {
+		if err := atomicFile(root, r.Path, data, nil); err != nil {
 			return nil, err
 		}
 		e, err := makeEntry(root, r.Path)
@@ -1098,6 +1108,9 @@ func applyBoundFiles(root *os.Root, files []StackFileUpload, deletions []FileToD
 			return nil, fileError(http.StatusForbidden, "apply exceeds %d MiB", maxStackApplyBytes>>20)
 		}
 		data[i] = b
+		if f.Mode != nil && *f.Mode != 0644 && *f.Mode != 0755 {
+			return nil, fileError(http.StatusBadRequest, "unsupported file mode %#o: %s", *f.Mode, f.Path)
+		}
 		// Validate the complete batch before changing a single file.
 		if err := preflightUpload(root, f.Path, f.Revision); err != nil {
 			return nil, err
@@ -1116,7 +1129,7 @@ func applyBoundFiles(root *os.Root, files []StackFileUpload, deletions []FileToD
 		if err := revisionGuard(root, f.Path, f.Revision, true); err != nil {
 			return nil, err
 		}
-		if err := atomicFile(root, f.Path, data[i]); err != nil {
+		if err := atomicFile(root, f.Path, data[i], f.Mode); err != nil {
 			return nil, err
 		}
 	}
