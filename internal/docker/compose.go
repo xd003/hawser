@@ -514,14 +514,16 @@ func writeStackFiles(stackDir string, files map[string]string, modes map[string]
 }
 
 func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLine func(string)) (*ComposeResult, error) {
-	// `docker compose up` has no --no-cache, so a no-cache rebuild runs `build --no-cache`
-	// first and then `up --build`, which is a cache hit. `up` must keep --build: without it
-	// a pull policy pulls a registry tag over the fresh image. File deletions go with the
-	// build step, so a file removed from the stack is not in the build context.
-	if op.Operation == "up" && op.Build && op.NoBuildCache {
+	// `docker compose up` has no --no-cache, and its --pull is a pull policy, not a base-image
+	// pull, so a no-cache or base-image rebuild runs `build` (--no-cache, --pull) first. After a
+	// no-cache build `up --build` is a cache hit, and `up` must keep --build: without it a pull
+	// policy pulls a registry tag over the fresh image. After a base-image pull `up` runs
+	// without --build: a second build without --pull would rebuild from the cached base and
+	// undo the pull. File deletions go with the build step, so a file removed from the stack
+	// is not in the build context.
+	if op.Operation == "up" && op.Build && (op.NoBuildCache || op.PullBase) {
 		buildOp := *op
 		buildOp.Operation = "build"
-		buildOp.PullBase = false
 		buildOp.UpdateBoundComposeFiles = false // committed by the up step only
 		built, err := c.execute(ctx, &buildOp, onLine)
 		if err != nil || !built.Success {
@@ -529,6 +531,10 @@ func (c *ComposeClient) Execute(ctx context.Context, op *ComposeOperation, onLin
 		}
 		upOp := *op
 		upOp.NoBuildCache = false
+		upOp.PullBase = false
+		if op.PullBase {
+			upOp.Build = false
+		}
 		upOp.FilesToDelete = nil
 		result, err := c.execute(ctx, &upOp, onLine)
 		if result != nil {
@@ -770,6 +776,14 @@ func (c *ComposeClient) execute(ctx context.Context, op *ComposeOperation, onLin
 		}
 	case "pull":
 		args = append(args, "pull")
+		if op.PullPolicy == "always" {
+			args = append(args, "--policy", "always")
+		}
+		// Before a separate base-image or no-cache build: the build replaces those
+		// images, and a service whose tag is in no registry would fail the pull.
+		if op.PullBase || op.NoBuildCache {
+			args = append(args, "--ignore-buildable")
+		}
 	case "build":
 		args = append(args, "build")
 		if op.PullBase {

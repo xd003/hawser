@@ -524,3 +524,80 @@ func statPerm(t *testing.T, dir, rel string) os.FileMode {
 	}
 	return fi.Mode().Perm()
 }
+
+// A base-image pull is a `build --pull` before a plain `up`: `up --build` after it
+// would rebuild from the cached base and undo the pull.
+func TestExecutePullBaseBuildsWithPullBeforeUp(t *testing.T) {
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	script := filepath.Join(dir, "compose")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"$*\" >> "+calls+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := NewComposeClient("", dir)
+	c.composeChecked = true
+	c.composeCmd = script
+	c.composeArgs = nil
+
+	for _, tc := range []struct {
+		noCache bool
+		build   string
+	}{{false, " build --pull"}, {true, " build --pull --no-cache"}} {
+		os.Remove(calls)
+		op := &ComposeOperation{Operation: "up", ProjectName: "demo", ComposeFile: "services: {}", Build: true, PullBase: true, NoBuildCache: tc.noCache}
+		res, err := c.Execute(context.Background(), op, nil)
+		if err != nil || !res.Success {
+			t.Fatalf("pull-base up failed: %#v %v", res, err)
+		}
+		got, err := os.ReadFile(calls)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(got)), "\n")
+		if len(lines) != 2 || !strings.HasSuffix(lines[0], tc.build) ||
+			!strings.Contains(lines[1], " up -d --remove-orphans") || strings.Contains(lines[1], "--build") || strings.Contains(lines[1], "--pull") {
+			t.Fatalf("noCache=%v: want `%s` then plain up, got %q", tc.noCache, strings.TrimSpace(tc.build), lines)
+		}
+	}
+}
+
+// A pull mirrors Dockhand's local pull: --policy always for 'always', --ignore-buildable
+// before a separate base-image or no-cache build (a built tag is in no registry), and the
+// requested services last.
+func TestExecutePullFlagsMatchDockhand(t *testing.T) {
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	script := filepath.Join(dir, "compose")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"$*\" >> "+calls+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := NewComposeClient("", dir)
+	c.composeChecked = true
+	c.composeCmd = script
+	c.composeArgs = nil
+
+	for _, tc := range []struct {
+		op   ComposeOperation
+		want string
+	}{
+		{ComposeOperation{}, " pull"},
+		{ComposeOperation{PullPolicy: "always"}, " pull --policy always"},
+		{ComposeOperation{Build: true, PullBase: true}, " pull --ignore-buildable"},
+		{ComposeOperation{Build: true, NoBuildCache: true, Services: []string{"web"}}, " pull --ignore-buildable web"},
+	} {
+		os.Remove(calls)
+		op := tc.op
+		op.Operation, op.ProjectName, op.ComposeFile = "pull", "demo", "services: {}"
+		res, err := c.Execute(context.Background(), &op, nil)
+		if err != nil || !res.Success {
+			t.Fatalf("pull failed: %#v %v", res, err)
+		}
+		got, err := os.ReadFile(calls)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line := strings.TrimSpace(string(got)); !strings.HasSuffix(line, tc.want) {
+			t.Fatalf("%+v: want suffix %q, got %q", tc.op, tc.want, line)
+		}
+	}
+}

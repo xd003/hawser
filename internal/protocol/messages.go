@@ -41,15 +41,17 @@ const (
 	CapabilityGitSyncDelete    = "git-sync-delete"    // Git deletion sync: hash-verified file removals (#966)
 	CapabilityComposeFileNames = "compose-file-names" // Ordered multi-file compose (-f) via ComposeFileNames
 	CapabilityStackFiles       = "stack-files-v1"     // Scoped durable stack file bindings and revision-checked workspace
+	CapabilityBuildPullBase    = "build-pull-base"    // up with build + pullBase runs `build --pull` before up
 )
 
 // AgentCapabilities is the capability list both Standard (/_hawser/info) and
-// Edge (hello) advertise. Ordered multi-file compose is compiled in wherever
-// Compose is handled, so it rides along with the compose capability.
+// Edge (hello) advertise. Ordered multi-file compose and base-image pulls are
+// compiled in wherever Compose is handled, so they ride along with the compose
+// capability.
 func AgentCapabilities(compose, stackFiles bool) []string {
 	capabilities := []string{CapabilityExec, CapabilityMetrics, CapabilityEvents, CapabilityGitSyncDelete}
 	if compose {
-		capabilities = append(capabilities, CapabilityCompose, CapabilityComposeFileNames)
+		capabilities = append(capabilities, CapabilityCompose, CapabilityComposeFileNames, CapabilityBuildPullBase)
 	}
 	if stackFiles {
 		capabilities = append(capabilities, CapabilityStackFiles)
