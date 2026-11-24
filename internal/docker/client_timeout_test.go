@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"os"
@@ -33,6 +34,14 @@ func stubDockerSocket(t *testing.T) string {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"Version":"29.0.0","ApiVersion":"1.44"}`))
 	})
+	// Slow endpoints answer only after slowDockerCall, like a prune or a
+	// listing on saturated storage.
+	slow := func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(slowDockerCall)
+		_, _ = w.Write([]byte(`{}`))
+	}
+	mux.HandleFunc("/images/prune", slow)
+	mux.HandleFunc("/images/json", slow)
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close(); _ = os.Remove(sock) })
@@ -63,5 +72,29 @@ func TestNewClient_TimeoutFallsBackToDefault(t *testing.T) {
 		if got := c.httpClient.Timeout; got != 30*time.Second {
 			t.Fatalf("NewClient(%d) timeout = %v, want 30s default", v, got)
 		}
+	}
+}
+
+const slowDockerCall = 1500 * time.Millisecond
+
+// A prune answers only when Docker has finished it, which on slow storage
+// takes far longer than REQUEST_TIMEOUT. Proxied prunes must get PruneTimeout
+// while every other proxied call keeps REQUEST_TIMEOUT.
+func TestRequestRaw_PruneOutlivesRequestTimeout(t *testing.T) {
+	sock := stubDockerSocket(t)
+	c, err := NewClient(sock, 1)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	resp, err := c.RequestRaw(context.Background(), http.MethodPost, `/images/prune?filters={"dangling":["false"]}`, nil, nil)
+	if err != nil {
+		t.Fatalf("prune hit REQUEST_TIMEOUT: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp, err := c.RequestRaw(context.Background(), http.MethodGet, "/images/json", nil, nil); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("non-prune call outlived REQUEST_TIMEOUT")
 	}
 }

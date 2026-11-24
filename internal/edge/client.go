@@ -497,13 +497,17 @@ func (c *Client) handleMessage(data []byte) {
 // their own timeout (ComposeTimeout, default 900s) instead of inheriting the
 // short RequestTimeout (default 30s) meant for ordinary Docker API calls.
 // Stack-files requests get docker.StackFilesTimeout: a full apply batch is
-// tens of MiB written and fsynced file by file.
+// tens of MiB written and fsynced file by file. Prune requests get
+// docker.PruneTimeout: Docker answers only after the whole prune finishes.
 func (c *Client) requestTimeout(path string) time.Duration {
 	switch path {
 	case "/_hawser/compose":
 		return time.Duration(c.cfg.ComposeTimeout) * time.Second
 	case "/_hawser/stack-files":
 		return max(docker.StackFilesTimeout, time.Duration(c.cfg.RequestTimeout)*time.Second)
+	}
+	if docker.IsPrunePath(path) {
+		return max(docker.PruneTimeout, time.Duration(c.cfg.RequestTimeout)*time.Second)
 	}
 	return time.Duration(c.cfg.RequestTimeout) * time.Second
 }

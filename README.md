@@ -547,7 +547,7 @@ Hawser is configured via environment variables:
 | `AGENT_ID` | Unique agent identifier. Set it to keep the same ID across restarts. | New UUID on every start |
 | `AGENT_NAME` | Human-readable agent name | Hostname |
 | `HEARTBEAT_INTERVAL` | Heartbeat interval in seconds (Edge mode) | `30` |
-| `REQUEST_TIMEOUT` | Request timeout in seconds (raise for slow storage such as ZFS syncfs, which can make a container recreate exceed 30s) | `30` |
+| `REQUEST_TIMEOUT` | Request timeout in seconds (raise for slow storage such as ZFS syncfs, which can make a container recreate exceed 30s). Prune calls (`/…/prune`) always get at least 5 minutes. | `30` |
 | `COMPOSE_TIMEOUT` | Compose operation timeout in seconds (Edge mode; up/down/pull can run far longer than a normal request) | `900` |
 | `RECONNECT_DELAY` | Initial reconnect delay (Edge mode) | `1` |
 | `MAX_RECONNECT_DELAY` | Maximum reconnect delay (Edge mode) | `60` |

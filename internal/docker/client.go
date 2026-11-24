@@ -18,8 +18,21 @@ import (
 type Client struct {
 	socketPath   string
 	httpClient   *http.Client
+	pruneClient  *http.Client // Non-streaming client with the longer PruneTimeout
 	streamClient *http.Client // Separate client for streaming (no timeout)
 	apiVersion   string
+}
+
+// PruneTimeout bounds one /…/prune call. Docker sends nothing until the prune
+// finishes, and removing every unused image on slow storage runs for minutes.
+// Dockhand waits the same time.
+const PruneTimeout = 5 * time.Minute
+
+// IsPrunePath reports whether path is a Docker prune endpoint; the query
+// string (e.g. image prune filters) is ignored.
+func IsPrunePath(path string) bool {
+	path, _, _ = strings.Cut(path, "?")
+	return strings.HasSuffix(path, "/prune")
 }
 
 // Default API version if negotiation fails (v1.44 = Docker Engine 25.0+)
@@ -63,11 +76,16 @@ func NewClient(socketPath string, requestTimeout int) (*Client, error) {
 		IdleConnTimeout:     0, // No idle timeout for streaming connections
 	}
 
+	requestBudget := time.Duration(requestTimeout) * time.Second
 	client := &Client{
 		socketPath: socketPath,
 		httpClient: &http.Client{
 			Transport: transport,
-			Timeout:   time.Duration(requestTimeout) * time.Second,
+			Timeout:   requestBudget,
+		},
+		pruneClient: &http.Client{
+			Transport: transport,
+			Timeout:   max(PruneTimeout, requestBudget),
 		},
 		streamClient: &http.Client{
 			Transport: streamTransport,
@@ -181,7 +199,11 @@ func (c *Client) RequestRaw(ctx context.Context, method, path string, headers ma
 	}
 
 	log.Debugf("Docker API (raw): %s %s", method, path)
-	resp, err := c.httpClient.Do(req)
+	httpClient := c.httpClient
+	if IsPrunePath(path) {
+		httpClient = c.pruneClient
+	}
+	resp, err := httpClient.Do(req)
 	if err == nil {
 		log.Debugf("Docker API response: %s %s -> %d", method, path, resp.StatusCode)
 	}

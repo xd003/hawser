@@ -207,6 +207,8 @@ func TestRequestTimeout_ComposeGetsOwnBudget(t *testing.T) {
 		{"compose path gets ComposeTimeout", "/_hawser/compose", 900 * time.Second},
 		{"stack-files path gets the stack-files budget", "/_hawser/stack-files", 5 * time.Minute},
 		{"regular docker path gets RequestTimeout", "/containers/json", 30 * time.Second},
+		{"prune path gets the prune budget", "/images/prune", 5 * time.Minute},
+		{"prune path with filters gets the prune budget", `/v1.44/images/prune?filters={"dangling":["false"]}`, 5 * time.Minute},
 		{"path containing compose as substring is not special-cased", "/_hawser/compose/logs", 30 * time.Second},
 		{"root path gets RequestTimeout", "/", 30 * time.Second},
 	}
